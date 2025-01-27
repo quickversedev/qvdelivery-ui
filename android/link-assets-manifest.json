@@ -1,0 +1,29 @@
+{
+  "migIndex": 1,
+  "data": [
+    {
+      "path": "assets/fonts/Battambang-Black.ttf",
+      "sha1": "3617289b58cd77cce39dd2309305bc3cc3ff9a33"
+    },
+    {
+      "path": "assets/fonts/Battambang-Bold.ttf",
+      "sha1": "df4698579f8754ea80a33fe1f1d47e1dda01d5b6"
+    },
+    {
+      "path": "assets/fonts/Battambang-Light.ttf",
+      "sha1": "561b36e874cae0e91839326fbd938862e0f620c1"
+    },
+    {
+      "path": "assets/fonts/Battambang-Regular.ttf",
+      "sha1": "be1ddde30ea93609533255824590fc0ce7d2b0bd"
+    },
+    {
+      "path": "assets/fonts/Battambang-Thin.ttf",
+      "sha1": "6f4ce590f268c1252cd48b2c2982ab6b88d3ee20"
+    },
+    {
+      "path": "assets/fonts/OFL.txt",
+      "sha1": "e52dd2592c8d780da4a95e3dadbb8b96d55cb1fb"
+    }
+  ]
+}
