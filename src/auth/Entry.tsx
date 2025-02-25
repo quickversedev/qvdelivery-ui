@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "react-native-paper";
 import * as Haptics from "expo-haptics";
 import ImageList from "../ImageList";
+import { globalStyles } from "../GlobalStyles";
 
 export default function Entry({
   navigation,
@@ -11,27 +12,10 @@ export default function Entry({
   navigation: any;
 }): JSX.Element {
   return (
-    <SafeAreaView
-      style={{ flex: 1, backgroundColor: "white", alignItems: "center" }}
-    >
-      <Image
-        source={ImageList.loginBackGround}
-        style={{
-          position: "absolute",
-          objectFit: "contain",
-          top: -25,
-        }}
-      />
+    <SafeAreaView style={globalStyles.safeAreaView}>
+      <Image source={ImageList.loginBackGround} style={styles.bgYellow} />
 
-      <Image
-        source={ImageList.Logo}
-        style={{
-          position: "absolute",
-          objectFit: "contain",
-          width: "80%",
-          height: "80%",
-        }}
-      />
+      <Image source={ImageList.Logo} style={styles.logo} />
 
       <Button
         mode="elevated"
@@ -47,26 +31,22 @@ export default function Entry({
       >
         Log In
       </Button>
-
-      {/* <Button
-        mode="elevated"
-        textColor={"#8F1413"}
-        style={styles.buttonSecondary}
-        contentStyle={{ height: 60 }}
-        labelStyle={{ fontSize: 20, fontWeight: "bold" }}
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          console.log("signUp pressed");
-        navigation.navigate("register");
-        }}
-      >
-        Sign Up
-      </Button> */}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  bgYellow: {
+    position: "absolute",
+    objectFit: "contain",
+    top: -25,
+  },
+  logo: {
+    position: "absolute",
+    objectFit: "contain",
+    width: "80%",
+    height: "80%",
+  },
   buttonPrimary: {
     width: "50%",
     backgroundColor: "#8F1413",
@@ -74,15 +54,6 @@ const styles = StyleSheet.create({
     borderColor: "black",
     borderRadius: 23,
     marginTop: "auto",
-    marginBottom: 50,
-  },
-  buttonSecondary: {
-    width: "50%",
-    backgroundColor: "#FFDC52",
-    borderWidth: 1,
-    borderColor: "black",
-    borderRadius: 23,
-    marginTop: 20,
     marginBottom: 50,
   },
 });

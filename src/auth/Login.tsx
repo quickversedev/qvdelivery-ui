@@ -4,8 +4,14 @@ import { widthPercentageToDP as wp } from "react-native-responsive-screen";
 import { Button, Menu, Divider } from "react-native-paper";
 import * as Haptics from "expo-haptics";
 import TopTabNavigation from "../components/TopTabNavigation";
+import { globalStyles } from "../GlobalStyles";
+
+import { useDispatch } from "react-redux";
+import { setToken } from "../../store"; // Import Redux action
 
 export default function Login({ navigation }: { navigation: any }) {
+  const dispatch = useDispatch(); // Get dispatch function
+
   const [loading, setLoading] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState("");
   const [otp, setOtp] = useState(["", "", "", ""]);
@@ -43,46 +49,29 @@ export default function Login({ navigation }: { navigation: any }) {
     // const payload = {
     //   phone: `+91${phoneNumber}`,
     //   otp: fullOtp,
-    //   resend: false,
     // };
     // try {
     //   const res = await loginWithOTP(payload);
-    //   console.log('Login with OTP:', res);
-    //   const userRole = await AsyncStorage.getItem('userRole');
-    //   const userDesignation = await AsyncStorage.getItem('userDesignation');
-    //   // Logic to handle navigation based on user role and designation
-    //   if (userRole === 'builder') {
-    //     if (userDesignation === 'sales') {
-    //       navigation.navigate('SalesTabNavigator');
-    //     } else if (userDesignation === 'Engineer') {
-    //       navigation.navigate('SiteEngineerTabNavigator');
-    //     } else if (userDesignation === 'Admin') {
-    //       navigation.navigate('AdminTabNavigator');
-    //     } else {
-    //       showToasterMessage('You don not have access:', userDesignation);
-    //     }
-    //   } else if (userRole === 'lead') {
-    //     navigation.navigate('ConsumerTabNavigator');
-    //   } else if (userRole === 'service-provider') {
-    //     if (response.user.serviceProvider.is_onboarded) {
-    //       navigation.navigate('ServiceProviderTabNavigator');
-    //     } else {
-    //       navigation.navigate('ServiceProviderOnboarding');
-    //     }
-    //   } else if (userRole === 'vendor') {
-    //     if (response.user.vendor.is_onboarded) {
-    //       navigation.navigate('VendorTabNavigator');
-    //     } else {
-    //       navigation.navigate('VendorOnboarding');
-    //     }
-    //   }
-    //   showToasterMessage('Login successful');
+    //   console.log("Login with OTP:", res);
+    //   // Store token in Redux
+    //   dispatch(setToken(res.token));
+    //   navigation.navigate("Orders");
+    //   console.log("Token:", res.token);
+    //   showToasterMessage("Login successful");
     // } catch (err) {
-    //   console.error('error logging in with OTP:', err);
-    //   showToasterMessage(err?.response?.data?.message);
+    //   console.error("Error logging in with OTP:", err);
+    //   showToasterMessage(err?.response?.data?.message)dispatch;
     // } finally {
     //   setLoading(false);
     // }
+
+    // const fullOtp = Number(otp.join(""));
+    // console.log("LLL", fullOtp);
+
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    console.log("submit OTP pressed");
+    dispatch(setToken("sjkdcnkjsnkdjncksndkjcnsd"));
+    // navigation.navigate("Orders");
   };
 
   // Handle OTP input and auto-focus on the next or previous field
@@ -108,27 +97,14 @@ export default function Login({ navigation }: { navigation: any }) {
 
   return (
     <SafeAreaView
-      style={{ flex: 1, backgroundColor: "#FFDC52", alignItems: "center" }}
+      style={[globalStyles.safeAreaView, { backgroundColor: "#FFDC52" }]}
     >
       <TopTabNavigation
         title={"Sign Up"}
         onBackPress={() => navigation.goBack()}
       />
 
-      <View
-        style={{
-          backgroundColor: "white",
-          width: "100%",
-          height: "70%",
-          marginTop: "auto",
-          borderTopStartRadius: 40,
-          borderTopEndRadius: 40,
-          alignItems: "center",
-          paddingTop: 40,
-          paddingLeft: 20,
-          paddingRight: 20,
-        }}
-      >
+      <View style={styles.whiteContainer}>
         <Text style={styles.label}>Mobile Number</Text>
         <TextInput
           keyboardType="phone-pad"
@@ -162,38 +138,35 @@ export default function Login({ navigation }: { navigation: any }) {
           style={styles.buttonSecondary}
           contentStyle={{ height: 60 }}
           labelStyle={{ fontSize: 20, fontWeight: "bold" }}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            console.log("submit OTP pressed");
-            navigation.navigate("Orders");
-          }}
+          onPress={loginWithOtp}
         >
           {!isOtpSent ? "Send OTP" : "Submit OTP"}
         </Button>
-
-        {/* <Text style={{ marginBottom: 18, fontSize: 16 }}>
-          Don't have an account?{" "}
-          <Text
-            style={{ color: "#E95322" }}
-            // onPress={() => router.push("/register")}
-          >
-            Sign Up
-          </Text>
-        </Text> */}
       </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  // label
+  whiteContainer: {
+    backgroundColor: "white",
+    width: "100%",
+    height: "70%",
+    marginTop: "auto",
+    borderTopStartRadius: 40,
+    borderTopEndRadius: 40,
+    alignItems: "center",
+    paddingTop: 40,
+    paddingLeft: 20,
+    paddingRight: 20,
+  },
+
   label: {
     width: "100%",
     color: "black",
     fontSize: 25,
   },
 
-  // form Input
   formInput: {
     width: "100%",
     height: 60,
