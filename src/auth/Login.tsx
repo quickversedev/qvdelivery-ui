@@ -1,16 +1,15 @@
 import { StyleSheet, Text, View, SafeAreaView, TextInput } from "react-native";
 import React, { useState, useRef } from "react";
 import { widthPercentageToDP as wp } from "react-native-responsive-screen";
-import { Button, Menu, Divider } from "react-native-paper";
+import { Button } from "react-native-paper";
 import * as Haptics from "expo-haptics";
 import TopTabNavigation from "../components/TopTabNavigation";
 import { globalStyles } from "../GlobalStyles";
 
-import { useDispatch } from "react-redux";
-import { setToken } from "../../store"; // Import Redux action
+import { useAuth } from "../contexts/Auth";
 
 export default function Login({ navigation }: { navigation: any }) {
-  const dispatch = useDispatch(); // Get dispatch function
+  const auth = useAuth();
 
   const [loading, setLoading] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -43,35 +42,9 @@ export default function Login({ navigation }: { navigation: any }) {
 
   // API call to verify OTP and login
   const loginWithOtp = async () => {
-    // if (loading) return;
-    // setLoading(true);
-    // const fullOtp = otp.join(''); // Combine OTP digits into a single string
-    // const payload = {
-    //   phone: `+91${phoneNumber}`,
-    //   otp: fullOtp,
-    // };
-    // try {
-    //   const res = await loginWithOTP(payload);
-    //   console.log("Login with OTP:", res);
-    //   // Store token in Redux
-    //   dispatch(setToken(res.token));
-    //   navigation.navigate("Orders");
-    //   console.log("Token:", res.token);
-    //   showToasterMessage("Login successful");
-    // } catch (err) {
-    //   console.error("Error logging in with OTP:", err);
-    //   showToasterMessage(err?.response?.data?.message)dispatch;
-    // } finally {
-    //   setLoading(false);
-    // }
-
-    // const fullOtp = Number(otp.join(""));
-    // console.log("LLL", fullOtp);
-
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     console.log("submit OTP pressed");
-    dispatch(setToken("sjkdcnkjsnkdjncksndkjcnsd"));
-    // navigation.navigate("Orders");
+    await auth.signIn();
   };
 
   // Handle OTP input and auto-focus on the next or previous field
@@ -100,7 +73,7 @@ export default function Login({ navigation }: { navigation: any }) {
       style={[globalStyles.safeAreaView, { backgroundColor: "#FFDC52" }]}
     >
       <TopTabNavigation
-        title={"Sign Up"}
+        title={"Log In"}
         onBackPress={() => navigation.goBack()}
       />
 
