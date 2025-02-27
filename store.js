@@ -1,7 +1,7 @@
 import { configureStore, createSlice } from "@reduxjs/toolkit";
 
 const initialState = {
-  isActive: true, // Default value
+  isActive: null, // Default value
   token: null, // Store the authentication token
 };
 
