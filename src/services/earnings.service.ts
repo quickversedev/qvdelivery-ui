@@ -12,6 +12,7 @@ import type {
   EarningsChartV3,
   TodayOrdersSummaryV3,
 } from '../types/earnings';
+import { TokenStorage } from '../utils/storage';
 
 // ─── Filter Param Mapping ────────────────────────────────────────────────────
 const FILTER_MAP: Record<EarningsPeriod, string> = {
@@ -19,6 +20,14 @@ const FILTER_MAP: Record<EarningsPeriod, string> = {
   thisWeek: 'this_week',
   thisMonth: 'this_month',
   lifetime: 'lifetime',
+};
+
+const getHeaders = async () => {
+  const sessionKey = await TokenStorage.getToken();
+  return {
+    SessionKey: sessionKey || '',
+    'Request-Origin': 'TRANSPORTER',
+  };
 };
 
 // ─── Comparison Labels (for UI display) ─────────────────────────────────────
@@ -37,9 +46,12 @@ const getEarningsSummary = async (
   const filter = FILTER_MAP[period];
   console.log(`[EarningsService] getEarningsSummary — filter=${filter}`);
 
+  const headers = await getHeaders();
+
   const raw = await apiCall<EarningsSummaryV3>(
     axiosInstance.get('/quickVerse/v3/delivery-partner/earnings-summary', {
       params: { filter },
+      headers,
     }),
   );
 
@@ -53,8 +65,12 @@ const getEarningsSummary = async (
 const getEarningsChart = async (): Promise<EarningsChartV3> => {
   console.log('[EarningsService] getEarningsChart');
 
+  const headers = await getHeaders();
+
   const raw = await apiCall<EarningsChartV3>(
-    axiosInstance.get('/quickVerse/v3/delivery-partner/earnings-chart'),
+    axiosInstance.get('/quickVerse/v3/delivery-partner/earnings-chart', {
+      headers,
+    }),
   );
 
   console.log('[EarningsService] Chart response:', JSON.stringify(raw, null, 2));
@@ -67,8 +83,12 @@ const getEarningsChart = async (): Promise<EarningsChartV3> => {
 const getTodayOrdersSummary = async (): Promise<TodayOrdersSummaryV3> => {
   console.log('[EarningsService] getTodayOrdersSummary');
 
+  const headers = await getHeaders();
+
   const raw = await apiCall<TodayOrdersSummaryV3>(
-    axiosInstance.get('/quickVerse/v3/delivery-partner/today-orders-summary'),
+    axiosInstance.get('/quickVerse/v3/delivery-partner/today-orders-summary', {
+      headers,
+    }),
   );
 
   console.log('[EarningsService] Orders summary response:', JSON.stringify(raw, null, 2));
