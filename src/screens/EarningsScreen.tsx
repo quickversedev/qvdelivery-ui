@@ -23,6 +23,7 @@ import EarningsSummaryCard from '../components/earnings/EarningsSummaryCard';
 import Last7DaysChart from '../components/earnings/Last7DaysChart';
 import OrdersPaymentSummary from '../components/earnings/OrdersPaymentSummary';
 import SettlementSection from '../components/earnings/SettlementSection';
+import useAuthStore from '../hooks/useAuthStore';
 
 // ─── Default empty states ────────────────────────────────────────────────────
 const EMPTY_SUMMARY: EarningsSummaryV3 = {
@@ -39,12 +40,16 @@ const EMPTY_ORDERS: TodayOrdersSummaryV3 = {
   totalOrders: 0,
   prepaidOrders: 0,
   codOrders: 0,
+  codQrOrders: 0,
   cashToSubmit: 0,
 };
 
 // ─── Component ───────────────────────────────────────────────────────────────
 const EarningsScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
+  
+  const { authData } = useAuthStore();
+  const partnerId = authData?.partnerId ?? '';
 
   // ── Filter state
   const [period, setPeriod] = useState<EarningsPeriod>('today');
@@ -63,39 +68,41 @@ const EarningsScreen: React.FC = () => {
   // Track first mount to avoid double fetch
   const mountedRef = useRef(false);
 
-  // ── Fetch summary (re-called on filter change)
+  // ── Fetch summary + orders (re-called on filter change)
   const fetchSummary = useCallback(
     async (silent = false) => {
+      if (!partnerId) return;
       if (!silent) { setSummaryLoading(true); }
       try {
-        const result = await earningsService.getEarningsSummary(period);
-        setSummaryData(result);
+        const [summaryResult, ordersResult] = await Promise.all([
+          earningsService.getEarningsSummary(partnerId, period),
+          earningsService.getTodayOrdersSummary(partnerId, period),
+        ]);
+        setSummaryData(summaryResult);
+        setOrdersData(ordersResult);
       } catch (err) {
-        console.warn('[EarningsScreen] Summary fetch failed:', err);
+        console.warn('[EarningsScreen] Summary/Orders fetch failed:', err);
       } finally {
         setSummaryLoading(false);
       }
     },
-    [period],
+    [period, partnerId],
   );
 
-  // ── Fetch chart + orders (only called on mount / pull-to-refresh)
+  // ── Fetch chart (only called on mount / pull-to-refresh)
   const fetchStaticData = useCallback(async () => {
+    if (!partnerId) return;
     try {
-      const [chart, orders] = await Promise.all([
-        earningsService.getEarningsChart(),
-        earningsService.getTodayOrdersSummary(),
-      ]);
+      const chart = await earningsService.getEarningsChart(partnerId);
       setChartData(chart);
-      setOrdersData(orders);
     } catch (err) {
-      console.warn('[EarningsScreen] Static data fetch failed:', err);
+      console.warn('[EarningsScreen] Chart data fetch failed:', err);
     }
-  }, []);
+  }, [partnerId]);
 
   // ── Initial mount — fetch all 3 APIs in parallel
   useEffect(() => {
-    if (mountedRef.current) { return; }
+    if (mountedRef.current || !partnerId) { return; }
     mountedRef.current = true;
 
     const initialFetch = async () => {
@@ -115,7 +122,7 @@ const EarningsScreen: React.FC = () => {
 
     initialFetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [partnerId]);
 
   // ── Filter change — re-fetch only summary (API 1)
   useEffect(() => {

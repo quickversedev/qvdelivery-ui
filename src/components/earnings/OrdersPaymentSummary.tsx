@@ -4,6 +4,7 @@ import {
   ClipboardList,
   BadgeCheck,
   Banknote,
+  QrCode,
   Info,
 } from 'lucide-react-native';
 import { FONT_FAMILY } from '../../theme/typography';
@@ -28,14 +29,14 @@ const StatCard: React.FC<StatCardProps> = ({ icon, count, label }) => (
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const OrdersPaymentSummary: React.FC<Props> = ({ data }) => {
-  const { totalOrders, prepaidOrders, codOrders, cashToSubmit } = data;
+  const { totalOrders, prepaidOrders, codOrders, codQrOrders, cashToSubmit } = data;
 
   return (
     <View style={styles.card}>
       {/* ── Section title ── */}
       <Text style={styles.sectionTitle}>ORDERS & PAYMENTS SUMMARY</Text>
 
-      {/* ── 3 stat cards ── */}
+      {/* ── 4 stat cards ── */}
       <View style={styles.statRow}>
         <StatCard
           icon={<ClipboardList size={22} color="#1D6BFC" strokeWidth={2} />}
@@ -53,6 +54,12 @@ const OrdersPaymentSummary: React.FC<Props> = ({ data }) => {
           icon={<Banknote size={22} color="#EA580C" strokeWidth={2} />}
           count={codOrders}
           label="Cash on COD"
+        />
+        <View style={styles.statDivider} />
+        <StatCard
+          icon={<QrCode size={22} color="#8B5CF6" strokeWidth={2} />}
+          count={codQrOrders || 0}
+          label="QR on COD"
         />
       </View>
 

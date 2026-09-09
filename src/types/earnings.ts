@@ -39,6 +39,7 @@ export interface TodayOrdersSummaryV3 {
   totalOrders: number;
   prepaidOrders: number;
   codOrders: number;
+  codQrOrders: number;
   cashToSubmit: number;
 }
 

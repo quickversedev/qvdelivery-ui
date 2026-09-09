@@ -1,17 +1,16 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ToastAndroid, Platform, Alert } from 'react-native';
 import { QrCode, Clock } from 'lucide-react-native';
 import { FONT_FAMILY } from '../../theme/typography';
-import VerifyCashBottomSheet from './VerifyCashBottomSheet';
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const SettlementSection: React.FC = () => {
-  const [qrComingSoon, setQrComingSoon] = useState(false);
-  const [verifySheetOpen, setVerifySheetOpen] = useState(false);
-
-  const handleQrPress = () => {
-    setQrComingSoon(true);
-    setTimeout(() => setQrComingSoon(false), 3000);
+  const handlePress = () => {
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('coming soon!', ToastAndroid.SHORT);
+    } else {
+      Alert.alert('Coming Soon');
+    }
   };
 
   return (
@@ -27,39 +26,42 @@ const SettlementSection: React.FC = () => {
           <TouchableOpacity
             style={styles.qrCard}
             activeOpacity={0.85}
-            onPress={handleQrPress}
+            onPress={handlePress}
           >
-            {/* Icon — centered */}
-            <View style={styles.iconWrap}>
-              <QrCode size={26} color="#1D6BFC" strokeWidth={2} />
-            </View>
-            <Text style={styles.qrTitle}>Generate QR</Text>
-            <Text style={styles.qrDesc}>
-              Generate QR to submit manual cash amount
-            </Text>
-            {qrComingSoon && (
-              <View style={styles.comingSoonBadge}>
-                <Text style={styles.comingSoonText}>Coming Soon</Text>
+            <View style={styles.cardTopContent}>
+              {/* Icon — centered */}
+              <View style={styles.iconWrap}>
+                <QrCode size={26} color="#1D6BFC" strokeWidth={2} />
               </View>
-            )}
+              <Text style={styles.qrTitle}>Generate QR</Text>
+              <Text style={styles.qrDesc}>
+                Generate QR to submit manual cash amount
+              </Text>
+            </View>
+            {/* Coming Soon badge */}
+            <View style={styles.comingSoonBadge}>
+              <Text style={styles.comingSoonText}>Coming Soon</Text>
+            </View>
           </TouchableOpacity>
 
           {/* ── Card 2: Outstanding Amount ── */}
           <TouchableOpacity
             style={styles.outstandingCard}
             activeOpacity={0.85}
-            onPress={() => setVerifySheetOpen(true)}
+            onPress={handlePress}
           >
-            {/* Icon — centered */}
-            <View style={styles.iconWrap}>
-              <Clock size={26} color="#1D6BFC" strokeWidth={2} />
+            <View style={styles.cardTopContent}>
+              {/* Icon — centered */}
+              <View style={styles.iconWrap}>
+                <Clock size={26} color="#1D6BFC" strokeWidth={2} />
+              </View>
+              <Text style={styles.outstandingTitle}>
+                Outstanding{'\n'}Amount
+              </Text>
+              <Text style={styles.outstandingDesc}>
+                View and submit your amount
+              </Text>
             </View>
-            <Text style={styles.outstandingTitle}>
-              Outstanding{'\n'}Amount
-            </Text>
-            <Text style={styles.outstandingDesc}>
-              View and submit your amount
-            </Text>
             {/* Coming Soon — always visible on outstanding card per requirements */}
             <View style={styles.comingSoonBadgeAlt}>
               <Text style={styles.comingSoonTextAlt}>Coming Soon</Text>
@@ -67,12 +69,6 @@ const SettlementSection: React.FC = () => {
           </TouchableOpacity>
         </View>
       </View>
-
-      {/* ── Verify Cash Bottom Sheet ── */}
-      <VerifyCashBottomSheet
-        visible={verifySheetOpen}
-        onClose={() => setVerifySheetOpen(false)}
-      />
     </>
   );
 };
@@ -110,6 +106,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     alignItems: 'center', // icon centered
+    justifyContent: 'space-between',
     shadowColor: '#1D6BFC',
     shadowOpacity: 0.12,
     shadowRadius: 8,
@@ -124,6 +121,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     alignItems: 'center', // icon centered
+    justifyContent: 'space-between',
     shadowColor: '#0A1730',
     shadowOpacity: 0.08,
     shadowRadius: 8,
@@ -131,6 +129,9 @@ const styles = StyleSheet.create({
     elevation: 3,
     borderWidth: 1,
     borderColor: '#E2E8F0',
+  },
+  cardTopContent: {
+    alignItems: 'center',
   },
   // ── Icon wrap — centered in both cards ──
   iconWrap: {
