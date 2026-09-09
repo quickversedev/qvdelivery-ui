@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Banknote,
   CheckCircle2,
+  Clock,
   CreditCard,
   ExternalLink,
   MapPin,
@@ -47,12 +48,17 @@ import {
   getBestEffortCurrentLocation,
   reverseGeocode,
 } from '../utils/location';
+
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const MAP_HEIGHT = SCREEN_HEIGHT * 0.38;
 const REPORT_MAP_HEIGHT = 210;
-
 const MODAL_IMAGE_WIDTH = SCREEN_WIDTH * 0.9;
 const MODAL_IMAGE_MAX_HEIGHT = SCREEN_HEIGHT * 0.75;
+
+// ─── TIME CALCULATION CONSTANTS ───
+const SPEED_KMH = 20; // 20 km per hour
+const SPEED_BUFFER_SECONDS = 30; // Additional 30 seconds buffer
+const PREPARATION_TIME_MINUTES = 20; // Static 20 minutes
 
 type RootStackParamList = {
   OrderDelivery: { order: DeliveryPartnerOrder };
@@ -73,8 +79,6 @@ interface StageConfig {
     | null;
 }
 
-
-
 interface CoordinateData {
   lat: number;
   lng: number;
@@ -91,6 +95,34 @@ interface ParsedAddress {
   state: string | null;
   pincode: string | null;
 }
+
+// ─── TIME CALCULATION UTILITIES ───
+const calculateEstimatedTimeMinutes = (
+  distanceKm: number | null,
+): number | null => {
+  if (distanceKm === null || distanceKm < 0) return null;
+  // Formula: (distance / speed) * 60 + buffer = minutes
+  const timeInSeconds = (distanceKm / SPEED_KMH) * 3600 + SPEED_BUFFER_SECONDS;
+  return Math.ceil(timeInSeconds / 60); // Convert to minutes and round up
+};
+
+const formatTimeLabel = (minutes: number | null): string => {
+  if (minutes === null) return 'Calculating...';
+  if (minutes < 1) return '< 1 min';
+  if (minutes === 1) return '1 min';
+  return `${minutes} min${minutes !== 1 ? 's' : ''}`;
+};
+
+const formatDetailedTime = (minutes: number | null): string => {
+  if (minutes === null) return 'N/A';
+  if (minutes < 60) {
+    return `${minutes} min${minutes !== 1 ? 's' : ''}`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (mins === 0) return `${hours} hr${hours !== 1 ? '' : ''}`;
+  return `${hours} hr ${mins} min${mins !== 1 ? 's' : ''}`;
+};
 
 const STAGE_CONFIG: Record<string, StageConfig> = {
   ACCEPTED: {
@@ -140,7 +172,7 @@ const STAGE_CONFIG: Record<string, StageConfig> = {
 const STEPS = [
   { label: 'Reach Store', emoji: '🏪' },
   { label: 'Pickup', emoji: '📦' },
-  { label: 'Reach Destination', emoji: '🛵' },
+  { label: 'Search Destination', emoji: '🗺️' },
   { label: 'Deliver', emoji: '✅' },
 ];
 
@@ -255,7 +287,39 @@ const parseCustomerAddress = (rawAddress: string | null): ParsedAddress => {
       state: null,
       pincode: null,
     };
-  const cleaned = rawAddress.replace(/^\{/, '').replace(/\}$/, '');
+  const trimmedAddress = rawAddress.trim();
+  if (trimmedAddress.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmedAddress) as Record<string, unknown>;
+      const latitude = Number(parsed.latitude);
+      const longitude = Number(parsed.longitude);
+      const formattedAddress = [
+        parsed.addressLine1,
+        parsed.addressLine2,
+        parsed.addressLine3,
+        parsed.landmark,
+        parsed.city,
+        parsed.state,
+        parsed.pincode,
+      ]
+        .filter(Boolean)
+        .join(', ');
+      return {
+        text: formattedAddress || trimmedAddress,
+        latitude: Number.isFinite(latitude) ? latitude : null,
+        longitude: Number.isFinite(longitude) ? longitude : null,
+        addressLine1: String(parsed.addressLine1 ?? '') || null,
+        addressLine2: String(parsed.addressLine2 ?? '') || null,
+        landmark: String(parsed.landmark ?? parsed.addressLine3 ?? '') || null,
+        city: String(parsed.city ?? '') || null,
+        state: String(parsed.state ?? '') || null,
+        pincode: String(parsed.pincode ?? '') || null,
+      };
+    } catch {
+      // Continue with the legacy key=value parser below.
+    }
+  }
+  const cleaned = trimmedAddress.replace(/^\{/, '').replace(/\}$/, '');
   const entries = [...cleaned.matchAll(/(\w+)=([^,]+(?:,(?!\s*\w+=)[^,]+)*)/g)];
   const map: Record<string, string> = {};
   entries.forEach(([, key, value]) => {
@@ -316,6 +380,11 @@ const formatCurrency = (amount: number): string => {
   return `₹${amount.toFixed(2)}`;
 };
 
+const toFiniteNumber = (value: unknown): number | null => {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+};
+
 const fitRegion = (coords: CoordinateData[]): Region | null => {
   const valid = coords.filter(
     c => Number.isFinite(c.lat) && Number.isFinite(c.lng),
@@ -356,6 +425,22 @@ const InfoChip: React.FC<{
       <Text style={s.infoChipValue} numberOfLines={2}>
         {value}
       </Text>
+    </View>
+  </View>
+);
+
+const TimeEstimateChip: React.FC<{
+  icon: React.ReactNode;
+  label: string;
+  time: string;
+  subLabel?: string;
+}> = ({ icon, label, time, subLabel }) => (
+  <View style={s.timeEstimateChip}>
+    <View style={s.timeEstimateIcon}>{icon}</View>
+    <View style={s.timeEstimateContent}>
+      <Text style={s.timeEstimateLabel}>{label}</Text>
+      <Text style={s.timeEstimateValue}>{time}</Text>
+      {subLabel && <Text style={s.timeEstimateSub}>{subLabel}</Text>}
     </View>
   </View>
 );
@@ -502,6 +587,22 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
   useEffect(() => {
     Geolocation.requestAuthorization();
 
+    const refreshPartnerLocation = () => {
+      getBestEffortCurrentLocation()
+        .then(location => {
+          if (componentMountedRef.current) {
+            setPartnerCoord({
+              lat: location.latitude,
+              lng: location.longitude,
+            });
+          }
+        })
+        .catch(error => console.warn('Current location unavailable:', error));
+    };
+
+    refreshPartnerLocation();
+    const locationRetryId = setInterval(refreshPartnerLocation, 10000);
+
     const watchId = Geolocation.watchPosition(
       position => {
         if (componentMountedRef.current) {
@@ -525,6 +626,7 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
 
     return () => {
       Geolocation.clearWatch(watchId);
+      clearInterval(locationRetryId);
     };
   }, []);
 
@@ -558,23 +660,43 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
     .filter(Boolean)
     .join(', ');
 
+  const shopLatitude =
+    order.shopDetails?.coordinates?.latitude ??
+    order.shopDetails?.latitude ??
+    order.shopDetails?.address?.latitude;
+  const shopLongitude =
+    order.shopDetails?.coordinates?.longitude ??
+    order.shopDetails?.longitude ??
+    order.shopDetails?.address?.longitude;
+  const normalizedShopLatitude = toFiniteNumber(shopLatitude);
+  const normalizedShopLongitude = toFiniteNumber(shopLongitude);
   const shopCoord: CoordinateData | null =
-    order.shopDetails?.coordinates &&
-    Number.isFinite(order.shopDetails.coordinates.latitude ?? NaN) &&
-    Number.isFinite(order.shopDetails.coordinates.longitude ?? NaN)
-      ? {
-          lat: order.shopDetails.coordinates.latitude!,
-          lng: order.shopDetails.coordinates.longitude!,
-        }
+    normalizedShopLatitude != null && normalizedShopLongitude != null
+      ? { lat: normalizedShopLatitude, lng: normalizedShopLongitude }
       : null;
 
-  const customerCoord: CoordinateData | null =
-    customerAddress.latitude != null &&
-    customerAddress.longitude != null &&
-    Number.isFinite(customerAddress.latitude) &&
-    Number.isFinite(customerAddress.longitude)
-      ? { lat: customerAddress.latitude, lng: customerAddress.longitude }
+  const normalizedCustomerLatitude = toFiniteNumber(customerAddress.latitude);
+  const normalizedCustomerLongitude = toFiniteNumber(customerAddress.longitude);
+  const parsedCustomerCoord: CoordinateData | null =
+    normalizedCustomerLatitude != null && normalizedCustomerLongitude != null
+      ? { lat: normalizedCustomerLatitude, lng: normalizedCustomerLongitude }
       : null;
+  const reportedCustomerCoord =
+    order.reportedAddresses?.find(
+      address =>
+        address.latitude != null &&
+        address.longitude != null &&
+        toFiniteNumber(address.latitude) != null &&
+        toFiniteNumber(address.longitude) != null,
+    ) ?? null;
+  const customerCoord: CoordinateData | null =
+    parsedCustomerCoord ??
+    (reportedCustomerCoord
+      ? {
+          lat: Number(reportedCustomerCoord.latitude),
+          lng: Number(reportedCustomerCoord.longitude),
+        }
+      : null);
 
   const distanceInKm = (
     from: CoordinateData | null,
@@ -597,20 +719,51 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
   const totalDistance =
     pickupDistance != null && dropDistance != null
       ? pickupDistance + dropDistance
+      : dropDistance ?? pickupDistance;
+
+  // ─── TIME ESTIMATIONS ───
+  const pickupEstimatedMinutes = calculateEstimatedTimeMinutes(pickupDistance);
+  const dropEstimatedMinutes = calculateEstimatedTimeMinutes(dropDistance);
+  const totalEstimatedMinutes =
+    pickupEstimatedMinutes != null && dropEstimatedMinutes != null
+      ? PREPARATION_TIME_MINUTES + pickupEstimatedMinutes + dropEstimatedMinutes
       : null;
+
   const displayDistance = (distance: number | null) =>
     distance == null ? 'N/A' : `${distance.toFixed(1)} km`;
-  const estimatedEarnings = order.finance?.commission;
-  const tipAmount = (order.finance as (typeof order.finance & {
-    tip?: number | null;
-  }) | null)?.tip;
-  const surgeFee = (order.finance as (typeof order.finance & {
-    surgeFee?: number | null;
-  }) | null)?.surgeFee;
+  const pickupDistanceLabel =
+    pickupDistance == null && partnerCoord == null
+      ? 'Locating...'
+      : displayDistance(pickupDistance);
+  const totalDistanceLabel =
+    totalDistance == null && partnerCoord == null
+      ? 'Locating...'
+      : displayDistance(totalDistance);
+
+  const totalBillAmount =
+    order.finance?.payableAmount ??
+    order.orderDetails?.totalAmount ??
+    order.orderDetails?.invoiceAmount ??
+    null;
+  const tipAmount = (
+    order.finance as
+      | (typeof order.finance & {
+          tip?: number | null;
+        })
+      | null
+  )?.tip;
+  const surgeFee = (
+    order.finance as
+      | (typeof order.finance & {
+          surgeFee?: number | null;
+        })
+      | null
+  )?.surgeFee;
   const isHotOrder = Boolean(
     (order as DeliveryPartnerOrder & { isHotOrder?: boolean }).isHotOrder,
   );
-  const rawOrderCreatedAt = order.assignedAt ?? order.orderDetails?.creationTime ?? order.createdAt;
+  const rawOrderCreatedAt =
+    order.assignedAt ?? order.orderDetails?.creationTime ?? order.createdAt;
   const numericOrderCreatedAt = Number(rawOrderCreatedAt);
   const parsedOrderCreatedAt =
     rawOrderCreatedAt &&
@@ -665,7 +818,6 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
 
   const isPrepaid = order?.finance?.paymentMethod === 'PREPAID' || false;
 
-
   const finalPaymentMethod = isPrepaid
     ? 'PREPAID'
     : paymentMode === 'ONLINE'
@@ -690,8 +842,6 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
       title: `Order #${order.orderId || order.id}`,
     });
   };
-
-
 
   const extractQrImageUrl = (raw: any): string | null => {
     if (!raw) return null;
@@ -767,44 +917,38 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
   }, [order]);
 
   // ── Check Payment Status (PROPERLY TYPED) ──
-  const checkPaymentStatus = useCallback(
-    async () => {
+  const checkPaymentStatus = useCallback(async () => {
+    if (!componentMountedRef.current) return;
+
+    setPaymentCheckLoading(true);
+    try {
+      const statusData: any = await deliveryPartnerService.getPaymentQrStatus(
+        order?.orderId,
+      );
+      console.log('Payment status:', statusData);
+
       if (!componentMountedRef.current) return;
 
-      setPaymentCheckLoading(true);
-      try {
-        const statusData: any = await deliveryPartnerService.getPaymentQrStatus(
-          order?.orderId,
-        );
-        console.log('Payment status:', statusData);
-
-        if (!componentMountedRef.current) return;
-
-        if (statusData?.isPaymentDone === true) {
-          setIsPaymentDone(true);
-          if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-          }
-
-          setOrder(prev => ({ ...prev, orderStatus: 'DELIVERED' }));
-          setQrModalVisible(false);
-
-          Alert.alert(
-            'Success',
-            'Payment received! Order marked as delivered.',
-          );
+      if (statusData?.isPaymentDone === true) {
+        setIsPaymentDone(true);
+        if (pollingIntervalRef.current) {
+          clearInterval(pollingIntervalRef.current);
+          pollingIntervalRef.current = null;
         }
-      } catch (error: any) {
-        console.error('Error checking payment status:', error);
-      } finally {
-        if (componentMountedRef.current) {
-          setPaymentCheckLoading(false);
-        }
+
+        setOrder(prev => ({ ...prev, orderStatus: 'DELIVERED' }));
+        setQrModalVisible(false);
+
+        Alert.alert('Success', 'Payment received! Order marked as delivered.');
       }
-    },
-    [order?.orderId],
-  );
+    } catch (error: any) {
+      console.error('Error checking payment status:', error);
+    } finally {
+      if (componentMountedRef.current) {
+        setPaymentCheckLoading(false);
+      }
+    }
+  }, [order?.orderId]);
 
   // ── Start polling for payment status ──
   const startPaymentPolling = useCallback(
@@ -1258,466 +1402,45 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
     isPrepaid,
   ]);
 
-  // ── Step renderers ────────────────────
-
-  const renderStep0 = () => (
-    <>
-      <MapWithMarkers
-        showStore
-        storeLat={shopCoord?.lat}
-        storeLng={shopCoord?.lng}
-        storeName={order.shopDetails?.name ?? 'Store'}
-        partnerLat={partnerCoord?.lat}
-        partnerLng={partnerCoord?.lng}
-        fallbackLabel={order.shopDetails?.name ?? 'Store'}
-      />
-
-      {/* ── Vendor / Customer toggle ── */}
-      <View style={s.contactToggleRow}>
-        <TouchableOpacity
-          style={[
-            s.contactToggleBtn,
-            storeContactView === 'vendor' && s.contactToggleBtnActive,
-          ]}
-          onPress={() => setStoreContactView('vendor')}
-          activeOpacity={0.85}
-        >
-          <Store
-            size={15}
-            color={storeContactView === 'vendor' ? '#FF4D00' : '#94A3B8'}
-          />
-          <Text
-            style={[
-              s.contactToggleText,
-              storeContactView === 'vendor' && s.contactToggleTextVendorActive,
-            ]}
-          >
-            Vendor
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            s.contactToggleBtn,
-            storeContactView === 'customer' && s.contactToggleBtnActive,
-          ]}
-          onPress={() => setStoreContactView('customer')}
-          activeOpacity={0.85}
-        >
-          <User
-            size={15}
-            color={storeContactView === 'customer' ? '#0B9E6E' : '#94A3B8'}
-          />
-          <Text
-            style={[
-              s.contactToggleText,
-              storeContactView === 'customer' &&
-                s.contactToggleTextCustomerActive,
-            ]}
-          >
-            Customer
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── Vendor detail card ── */}
-      {storeContactView === 'vendor' ? (
-        <View style={s.infoCard}>
-          <View style={s.infoCardHeader}>
-            <View style={s.infoCardHeaderLeft}>
-              <Text style={s.infoCardTitle}>
-                {order.shopDetails?.name || 'Store'}
-              </Text>
-              {order.shopDetails?.owner ? (
-                <Text style={s.infoCardSub}>{order.shopDetails.owner}</Text>
-              ) : null}
-            </View>
-            <View style={s.infoCardBadge}>
-              <Text style={s.infoCardBadgeText}>Pickup</Text>
-            </View>
-          </View>
-
-          <View style={s.divider} />
-
-          <InfoChip
-            icon={<MapPin size={14} color="#64748B" />}
-            label="Address"
-            value={shopAddressText || 'N/A'}
-          />
-
-          <View style={s.actionRow}>
-            {order.shopDetails?.phone && (
-              <TouchableOpacity
-                style={s.iconActionBtn}
-                onPress={() =>
-                  Linking.openURL(`tel:${order.shopDetails!.phone}`)
-                }
-                activeOpacity={0.8}
-              >
-                <Phone size={16} color="#16A34A" />
-                <Text style={[s.iconActionText, { color: '#16A34A' }]}>
-                  Call Store
-                </Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={[s.iconActionBtn, s.iconActionBtnBlue]}
-              onPress={() =>
-                openMaps(
-                  shopCoord?.lat ?? null,
-                  shopCoord?.lng ?? null,
-                  shopAddressText,
-                )
-              }
-              activeOpacity={0.85}
-            >
-              <Navigation size={16} color="#0E6DFD" />
-              <Text style={[s.iconActionText, { color: '#0E6DFD' }]}>
-                Navigate
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        /* ── Customer detail card ── */
-        <View style={s.infoCard}>
-          <View style={s.infoCardHeader}>
-            <View style={s.infoCardHeaderLeft}>
-              <Text style={s.infoCardTitle}>
-                {order.orderDetails?.customerName || 'Customer'}
-              </Text>
-              <Text style={s.infoCardSub}>Delivery destination</Text>
-            </View>
-            <View style={[s.infoCardBadge, { backgroundColor: '#F0F9FF' }]}>
-              <Text style={[s.infoCardBadgeText, { color: '#0891B2' }]}>
-                Drop
-              </Text>
-            </View>
-          </View>
-
-          <View style={s.divider} />
-
-          <InfoChip
-            icon={<MapPin size={14} color="#64748B" />}
-            label="Address"
-            value={customerAddress.text}
-          />
-
-          <View style={s.actionRow}>
-            {order.orderDetails?.customerMobile && (
-              <TouchableOpacity
-                style={s.iconActionBtn}
-                onPress={() =>
-                  Linking.openURL(
-                    `tel:${String(order.orderDetails!.customerMobile).slice(
-                      -10,
-                    )}`,
-                  )
-                }
-                activeOpacity={0.8}
-              >
-                <Phone size={16} color="#16A34A" />
-                <Text style={[s.iconActionText, { color: '#16A34A' }]}>
-                  Call Customer
-                </Text>
-              </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={[s.iconActionBtn, s.iconActionBtnBlue]}
-              onPress={() =>
-                openMaps(
-                  customerCoord?.lat ?? null,
-                  customerCoord?.lng ?? null,
-                  customerAddress.text,
-                )
-              }
-              activeOpacity={0.85}
-            >
-              <Navigation size={16} color="#0E6DFD" />
-              <Text style={[s.iconActionText, { color: '#0E6DFD' }]}>
-                Navigate
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-    </>
+  // ── Order stage timestamps ──
+  const assignedAtDateTime = formatOrderDateTime(
+    order?.assignedAt ? String(order.assignedAt) : null,
+  );
+  const arrivedAtStoreDateTime = formatOrderDateTime(
+    order?.arrivedAtStoreAt ? String(order.arrivedAtStoreAt) : null,
+  );
+  const pickedUpDateTime = formatOrderDateTime(
+    order?.pickedUpAt ? String(order.pickedUpAt) : null,
+  );
+  const reachedLocationDateTime = formatOrderDateTime(
+    order?.reachedLocationAt ? String(order.reachedLocationAt) : null,
+  );
+  const deliveredAtDateTime = formatOrderDateTime(
+    order?.deliveredAt ? String(order.deliveredAt) : null,
   );
 
-  const renderStep1 = () => (
-    <>
-      {/* ── Vendor / Customer toggle ── */}
-      <View style={s.contactToggleRow}>
-        <TouchableOpacity
-          style={[
-            s.contactToggleBtn,
-            pickupContactView === 'vendor' && s.contactToggleBtnActive,
-          ]}
-          onPress={() => setPickupContactView('vendor')}
-          activeOpacity={0.85}
-        >
-          <Store
-            size={15}
-            color={pickupContactView === 'vendor' ? '#FF4D00' : '#94A3B8'}
-          />
-          <Text
-            style={[
-              s.contactToggleText,
-              pickupContactView === 'vendor' && s.contactToggleTextVendorActive,
-            ]}
-          >
-            Vendor
-          </Text>
-        </TouchableOpacity>
+  const parseDateValueLocal = (value: string | null): Date | null => {
+    if (!value) return null;
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return new Date(num);
+    const d = new Date(value.includes(' ') ? value.replace(' ', 'T') : value);
+    return isNaN(d.getTime()) ? null : d;
+  };
 
-        <TouchableOpacity
-          style={[
-            s.contactToggleBtn,
-            pickupContactView === 'customer' && s.contactToggleBtnActive,
-          ]}
-          onPress={() => setPickupContactView('customer')}
-          activeOpacity={0.85}
-        >
-          <User
-            size={15}
-            color={pickupContactView === 'customer' ? '#0B9E6E' : '#94A3B8'}
-          />
-          <Text
-            style={[
-              s.contactToggleText,
-              pickupContactView === 'customer' &&
-                s.contactToggleTextCustomerActive,
-            ]}
-          >
-            Customer
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── Vendor preview ── */}
-      {pickupContactView === 'vendor' ? (
-        <View style={s.vendorChip}>
-          <View style={s.vendorChipLeft}>
-            <Text style={s.vendorChipName} numberOfLines={1}>
-              {order.shopDetails?.name || 'Store'}
-            </Text>
-            <Text style={s.vendorChipAddr} numberOfLines={1}>
-              {shopAddressText || 'N/A'}
-            </Text>
-          </View>
-          {order.shopDetails?.phone && (
-            <TouchableOpacity
-              style={s.vendorChipCall}
-              onPress={() => Linking.openURL(`tel:${order.shopDetails!.phone}`)}
-            >
-              <Phone size={14} color="#16A34A" />
-            </TouchableOpacity>
-          )}
-        </View>
-      ) : (
-        /* ── Customer preview ── */
-        <View style={s.vendorChip}>
-          <View style={s.vendorChipLeft}>
-            <Text style={s.vendorChipName} numberOfLines={1}>
-              {order.orderDetails?.customerName || 'Customer'}
-            </Text>
-            <Text style={s.vendorChipAddr} numberOfLines={1}>
-              {customerAddress.text}
-            </Text>
-            {!!customerMobileDisplay && (
-              <View style={s.vendorChipMobileRow}>
-                <Phone size={11} color="#64748B" />
-                <Text style={s.vendorChipMobile}>{customerMobileDisplay}</Text>
-              </View>
-            )}
-          </View>
-          {customerMobileDisplay && (
-            <TouchableOpacity
-              style={[s.vendorChipCall, { backgroundColor: '#ECFDF5' }]}
-              onPress={() => Linking.openURL(`tel:${customerMobileDisplay}`)}
-            >
-              <Phone size={14} color="#16A34A" />
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
-      <View style={s.infoCard}>
-        <Text style={s.sectionLabel}>ITEMS TO COLLECT</Text>
-        {(order.orderDetails?.orderItem ?? []).length > 0 ? (
-          (order.orderDetails!.orderItem as any[]).map((item: any) => (
-            <View key={item.id} style={s.itemRow}>
-              <View style={s.itemBullet} />
-              <Text style={s.itemName}>{item.name}</Text>
-              <Text style={s.itemQty}>×{item.itemCount}</Text>
-            </View>
-          ))
-        ) : (
-          <Text style={s.emptyText}>
-            {order.orderDetails?.orderDescription || 'No items listed'}
-          </Text>
-        )}
-        <View style={s.itemTotalRow}>
-          <Text style={s.itemTotalLabel}>Total Items</Text>
-          <Text style={s.itemTotalValue}>
-            {order.orderDetails?.totalItemCount ?? 0}
-          </Text>
-        </View>
-      </View>
-
-      <View style={s.infoCard}>
-        <Text style={s.sectionLabel}>ORDER</Text>
-        <View style={s.rowBetween}>
-          <Text style={s.rowLabel}>Order ID</Text>
-          <Text style={s.rowValue}>#{order.orderId || order.id}</Text>
-        </View>
-        <View style={s.rowBetween}>
-          <Text style={s.rowLabel}>Customer</Text>
-          <Text style={s.rowValue}>
-            {order.orderDetails?.customerName || 'N/A'}
-          </Text>
-        </View>
-        <View style={s.rowBetween}>
-          <Text style={s.rowLabel}>Payment</Text>
-          <Text style={s.rowValue}>{finalPaymentMethod ?? 'N/A'}</Text>
-        </View>
-      </View>
-
-      {order.orderDetails?.orderLink && (
-        <TouchableOpacity
-          style={s.webviewBtn}
-          onPress={openOrderWebView}
-          activeOpacity={0.85}
-        >
-          <ExternalLink size={15} color="#7C3AED" />
-          <Text style={s.webviewBtnText}>View Full Order Details</Text>
-        </TouchableOpacity>
-      )}
-    </>
-  );
-
-  const renderStep2 = () => (
-    <>
-      <MapWithMarkers
-        showStore
-        showCustomer
-        storeLat={shopCoord?.lat}
-        storeLng={shopCoord?.lng}
-        storeName={order.shopDetails?.name ?? 'Store'}
-        customerLat={customerCoord?.lat}
-        customerLng={customerCoord?.lng}
-        customerName={order.orderDetails?.customerName ?? 'Customer'}
-        partnerLat={partnerCoord?.lat}
-        partnerLng={partnerCoord?.lng}
-        fallbackLabel={order.orderDetails?.customerName ?? 'Customer'}
-      />
-
-      <View style={s.infoCard}>
-        <View style={s.infoCardHeader}>
-          <View style={s.infoCardHeaderLeft}>
-            <Text style={s.infoCardTitle}>
-              {order.orderDetails?.customerName || 'Customer'}
-            </Text>
-            <Text style={s.infoCardSub}>Delivery destination</Text>
-          </View>
-          <View style={[s.infoCardBadge, { backgroundColor: '#F0F9FF' }]}>
-            <Text style={[s.infoCardBadgeText, { color: '#0891B2' }]}>
-              Drop
-            </Text>
-          </View>
-        </View>
-
-        <View style={s.divider} />
-
-        <InfoChip
-          icon={<MapPin size={14} color="#64748B" />}
-          label="Address"
-          value={customerAddress.text}
-        />
-
-        <View style={s.actionRow}>
-          {order.orderDetails?.customerMobile && (
-            <TouchableOpacity
-              style={s.iconActionBtn}
-              onPress={() =>
-                Linking.openURL(
-                  `tel:${String(order.orderDetails!.customerMobile).slice(
-                    -10,
-                  )}`,
-                )
-              }
-              activeOpacity={0.8}
-            >
-              <Phone size={16} color="#16A34A" />
-              <Text style={[s.iconActionText, { color: '#16A34A' }]}>
-                Call Customer
-              </Text>
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={[s.iconActionBtn, s.iconActionBtnBlue]}
-            onPress={() =>
-              openMaps(
-                customerCoord?.lat ?? null,
-                customerCoord?.lng ?? null,
-                customerAddress.text,
-              )
-            }
-            activeOpacity={0.85}
-          >
-            <Navigation size={16} color="#0E6DFD" />
-            <Text style={[s.iconActionText, { color: '#0E6DFD' }]}>
-              Navigate
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* ── REPORTED ADDRESSES SECTION ── */}
-      {reportedAddresses.length > 0 && (
-        <View style={s.infoCard}>
-          <Text style={s.sectionLabel}>CUSTOMER REPORTED LOCATIONS</Text>
-          <Text style={s.reportedAddressesHint}>
-            Customer has reported {reportedAddresses.length} previous
-            location(s)
-          </Text>
-          {reportedAddresses.map((addr, idx) => (
-            <View key={addr.id} style={s.reportedAddressCard}>
-              <View style={s.reportedAddressHeader}>
-                <View style={s.reportedAddressIndex}>
-                  <Text style={s.reportedAddressIndexText}>{idx + 1}</Text>
-                </View>
-                <View style={s.reportedAddressInfo}>
-                  <Text style={s.reportedAddressLine1} numberOfLines={1}>
-                    {addr.addressLine1}
-                  </Text>
-                  <Text style={s.reportedAddressCity} numberOfLines={1}>
-                    {addr.city}, {addr.state} {addr.pincode}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={s.reportedAddressUseBtn}
-                  onPress={() => {
-                    openMaps(
-                      addr.latitude,
-                      addr.longitude,
-                      addr.addressLine1 as any,
-                    );
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <Navigation size={14} color="#0E6DFD" />
-                </TouchableOpacity>
-              </View>
-            </View>
-          ))}
-        </View>
-      )}
-    </>
-  );
+  const orderDateTime = (() => {
+    const d = parseDateValueLocal(
+      order.orderDetails?.creationTime ?? order.createdAt ?? null,
+    );
+    if (!d) return { date: 'N/A', time: '' };
+    return {
+      date: `${String(d.getDate()).padStart(2, '0')}/${String(
+        d.getMonth() + 1,
+      ).padStart(2, '0')}/${String(d.getFullYear()).slice(-2)}`,
+      time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+  })();
 
   const renderStep3 = () => {
-
     return (
       <>
         <View style={s.infoCard}>
@@ -1781,52 +1504,66 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
           </View>
         ) : (
           <View style={s.infoCard}>
-            <Text style={s.sectionLabel}>PAYMENT MODE</Text>
+            <Text style={s.sectionLabel}>SELECT PAYMENT METHOD</Text>
 
-            <View style={s.paymentModeRow}>
+            <View style={s.paymentMethodsList}>
+              {/* CASH OPTION */}
               <TouchableOpacity
                 style={[
-                  s.paymentModeBtn,
-                  paymentMode === 'ONLINE' && s.paymentModeBtnActive,
-                ]}
-                onPress={() => handlePaymentModeChange('ONLINE')}
-                activeOpacity={0.85}
-              >
-                <CreditCard
-                  size={18}
-                  color={paymentMode === 'ONLINE' ? '#0E6DFD' : '#94A3B8'}
-                />
-                <Text
-                  style={[
-                    s.paymentModeBtnText,
-                    paymentMode === 'ONLINE' && s.paymentModeBtnTextActive,
-                  ]}
-                >
-                  Online
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  s.paymentModeBtn,
-                  paymentMode === 'CASH' && s.paymentModeBtnActive,
+                  s.paymentMethodItem,
+                  paymentMode === 'CASH' && s.paymentMethodItemActive,
                 ]}
                 onPress={() => handlePaymentModeChange('CASH')}
-                activeOpacity={0.85}
+                activeOpacity={0.7}
               >
-                <Banknote
-                  size={18}
-                  color={paymentMode === 'CASH' ? '#0E6DFD' : '#94A3B8'}
-                />
-                <Text
-                  style={[
-                    s.paymentModeBtnText,
-                    paymentMode === 'CASH' && s.paymentModeBtnTextActive,
-                  ]}
-                >
-                  Cash
-                </Text>
+                <View style={s.paymentMethodRadio}>
+                  {paymentMode === 'CASH' && (
+                    <View style={s.paymentMethodRadioInner} />
+                  )}
+                </View>
+                <View style={s.paymentMethodContent}>
+                  <Text style={s.paymentMethodTitle}>Cash</Text>
+                  <Text style={s.paymentMethodDesc}>
+                    Collect ₹
+                    {totalBillAmount != null ? totalBillAmount.toFixed(0) : '0'}{' '}
+                    from customer
+                  </Text>
+                </View>
               </TouchableOpacity>
+
+              {/* ONLINE / UPI OPTION */}
+              <TouchableOpacity
+                style={[
+                  s.paymentMethodItem,
+                  paymentMode === 'ONLINE' && s.paymentMethodItemActive,
+                ]}
+                onPress={() => handlePaymentModeChange('ONLINE')}
+                activeOpacity={0.7}
+              >
+                <View style={s.paymentMethodRadio}>
+                  {paymentMode === 'ONLINE' && (
+                    <View style={s.paymentMethodRadioInner} />
+                  )}
+                </View>
+                <View style={s.paymentMethodContent}>
+                  <Text style={s.paymentMethodTitle}>UPI</Text>
+                  <Text style={s.paymentMethodDesc}>
+                    Share QR code with customer
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              {/* CASH + UPI COMING SOON */}
+              <View style={[s.paymentMethodItem, s.paymentMethodItemDisabled]}>
+                <View style={s.paymentMethodRadio}></View>
+                <View style={s.paymentMethodContent}>
+                  <Text style={s.paymentMethodTitle}>Cash + UPI</Text>
+                  <Text style={s.paymentMethodDesc}>Split payment</Text>
+                </View>
+                <View style={s.comingSoonBadge}>
+                  <Text style={s.comingSoonText}>Coming Soon</Text>
+                </View>
+              </View>
             </View>
 
             {/* ── ONLINE PAYMENT SECTION ── */}
@@ -1924,235 +1661,326 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
     );
   };
 
-  // ── Order stage timestamps ──
-  const assignedAtDateTime = formatOrderDateTime(
-    order?.assignedAt ? String(order.assignedAt) : null,
-  );
-  const arrivedAtStoreDateTime = formatOrderDateTime(
-    order?.arrivedAtStoreAt ? String(order.arrivedAtStoreAt) : null,
-  );
-  const pickedUpDateTime = formatOrderDateTime(
-    order?.pickedUpAt ? String(order.pickedUpAt) : null,
-  );
-  const reachedLocationDateTime = formatOrderDateTime(
-    order?.reachedLocationAt ? String(order.reachedLocationAt) : null,
-  );
-  const deliveredAtDateTime = formatOrderDateTime(
-    order?.deliveredAt ? String(order.deliveredAt) : null,
-  );
+  const renderStep0 = () => (
+    <>
+      <MapWithMarkers
+        showStore
+        storeLat={shopCoord?.lat}
+        storeLng={shopCoord?.lng}
+        storeName={order.shopDetails?.name ?? 'Store'}
+        partnerLat={partnerCoord?.lat}
+        partnerLng={partnerCoord?.lng}
+        fallbackLabel={order.shopDetails?.name ?? 'Store'}
+      />
 
-  const parseDateValueLocal = (value: string | null): Date | null => {
-    if (!value) return null;
-    const num = Number(value);
-    if (Number.isFinite(num) && num > 0) return new Date(num);
-    const d = new Date(value.includes(' ') ? value.replace(' ', 'T') : value);
-    return isNaN(d.getTime()) ? null : d;
-  };
-
-  const orderDateTime = (() => {
-    const d = parseDateValueLocal(
-      order.orderDetails?.creationTime ?? order.createdAt ?? null,
-    );
-    if (!d) return { date: 'N/A', time: '' };
-    return {
-      date: `${String(d.getDate()).padStart(2, '0')}/${String(
-        d.getMonth() + 1,
-      ).padStart(2, '0')}/${String(d.getFullYear()).slice(-2)}`,
-      time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-  })();
-
-  const renderStep4 = () => (
-    <View style={s.successCard}>
-      <View style={s.successIconWrap}>
-        <CheckCircle2 size={56} color="#16A34A" />
-      </View>
-      <Text style={s.successTitle}>Delivered!</Text>
-      <Text style={s.successSub}>
-        #{order.orderId || order.id} · {order.orderDetails?.customerName}
-      </Text>
-
-      <View style={s.successRow}>
-        <Text style={s.successRowLabel}>Customer</Text>
-        <Text style={s.successRowValue}>
-          {order.orderDetails?.customerName || 'N/A'}
-        </Text>
-      </View>
-      <View style={s.successRow}>
-        <Text style={s.successRowLabel}>Address</Text>
-        <Text style={s.successRowValue} numberOfLines={2}>
-          {customerAddress.text}
-        </Text>
-      </View>
-      <View style={s.successRow}>
-        <Text style={s.successRowLabel}>Payment</Text>
-        <Text style={s.successRowValue}>{finalPaymentMethod ?? 'N/A'}</Text>
-      </View>
-      <View style={[s.successRow, s.successRowLast]}>
-        <Text style={s.successRowLabel}>Order Value</Text>
-        <Text style={[s.successRowValue, s.successRowValueBold]}>
-          {formatCurrency(order?.finance?.payableAmount || computedTotal)}
-        </Text>
+      {/* ── TIME ESTIMATES - STEP 0 ── */}
+      <View style={s.timeEstimatesRow}>
+        <TimeEstimateChip
+          icon={<Clock size={14} color="#64748B" />}
+          label="Prep Time"
+          time={`${PREPARATION_TIME_MINUTES} min`}
+          subLabel="Estimated"
+        />
+        <TimeEstimateChip
+          icon={<Clock size={14} color="#64748B" />}
+          label="Pickup ETA"
+          time={formatTimeLabel(pickupEstimatedMinutes)}
+          subLabel="@ 20 km/h"
+        />
+        <TimeEstimateChip
+          icon={<Clock size={14} color="#64748B" />}
+          label="Total Time"
+          time={formatDetailedTime(totalEstimatedMinutes)}
+          subLabel="Prep + Delivery"
+        />
       </View>
 
-      {/* ── COMPACT DELIVERY TIMELINE ── */}
-      <View style={{ width: '100%' }}>
-        <Text style={s.sectionTitleInline}>Delivery Timeline</Text>
-
-        {/* Compact timeline container */}
-        <View style={s.compactTimelineContainer}>
-          {/* Order Placed - Always shown */}
-          <View style={s.compactTimelineStage}>
-            <View style={[s.compactDot, { backgroundColor: '#0E6DFD' }]} />
-            <View style={s.compactStageInfo}>
-              <Text style={s.compactStageLabel}>Order Placed</Text>
-              <Text style={s.compactStageTime}>
-                {orderDateTime.time !== 'N/A' ? orderDateTime.time : 'N/A'}
-              </Text>
-            </View>
+      <View style={s.infoCard}>
+        <View style={s.infoCardHeader}>
+          <View style={s.infoCardHeaderLeft}>
+            <Text style={s.infoCardTitle}>
+              {order.shopDetails?.name || 'Store'}
+            </Text>
+            {order.shopDetails?.owner ? (
+              <Text style={s.infoCardSub}>{order.shopDetails.owner}</Text>
+            ) : null}
           </View>
-          {/* Interval & Assigned At */}
-          {assignedAtDateTime.date !== 'N/A' && (
-            <View style={s.compactTimelineStage}>
-              <View style={[s.compactDot, { backgroundColor: '#0E6DFD' }]} />
-
-              <View style={s.compactStageInfo}>
-                <Text style={[s.compactStageLabel, { color: '#0E6DFD' }]}>
-                  Assigned At
-                </Text>
-
-                <Text style={[s.compactStageTime, { color: '#0E6DFD' }]}>
-                  {assignedAtDateTime.time || assignedAtDateTime.date}
-                </Text>
-              </View>
-
-              <View style={s.compactIntervalBadge}>
-                <Text style={s.compactIntervalBadgeText}>
-                  {calculateTimeDifference(
-                    order?.orderDetails?.creationTime ?? order?.createdAt,
-                    order?.assignedAt,
-                  )}
-                </Text>
-              </View>
-            </View>
-          )}
-          {/* Interval & Arrived at Store */}
-          {arrivedAtStoreDateTime.date !== 'N/A' && (
-            <View style={s.compactTimelineStage}>
-              <View style={[s.compactDot, { backgroundColor: '#0E6DFD' }]} />
-
-              <View style={s.compactStageInfo}>
-                <Text style={[s.compactStageLabel, { color: '#0E6DFD' }]}>
-                  Arrived at Store
-                </Text>
-
-                <Text style={[s.compactStageTime, { color: '#0E6DFD' }]}>
-                  {arrivedAtStoreDateTime.time || arrivedAtStoreDateTime.date}
-                </Text>
-              </View>
-
-              <View style={s.compactIntervalBadge}>
-                <Text style={s.compactIntervalBadgeText}>
-                  {calculateTimeDifference(
-                    order?.assignedAt,
-                    order?.arrivedAtStoreAt,
-                  )}
-                </Text>
-              </View>
-            </View>
-          )}
-          {/* Interval & Picked Up */}
-          {pickedUpDateTime.date !== 'N/A' && (
-            <View style={s.compactTimelineStage}>
-              <View style={[s.compactDot, { backgroundColor: '#0E6DFD' }]} />
-
-              <View style={s.compactStageInfo}>
-                <Text style={[s.compactStageLabel, { color: '#0E6DFD' }]}>
-                  Picked Up
-                </Text>
-
-                <Text style={[s.compactStageTime, { color: '#0E6DFD' }]}>
-                  {pickedUpDateTime.time || pickedUpDateTime.date}
-                </Text>
-              </View>
-
-              <View style={s.compactIntervalBadge}>
-                <Text style={s.compactIntervalBadgeText}>
-                  {calculateTimeDifference(
-                    order?.arrivedAtStoreAt,
-                    order?.pickedUpAt,
-                  )}
-                </Text>
-              </View>
-            </View>
-          )}
-          {/* Interval & Reached Destination */}
-          {reachedLocationDateTime.date !== 'N/A' && (
-            <View style={s.compactTimelineStage}>
-              <View style={[s.compactDot, { backgroundColor: '#0E6DFD' }]} />
-
-              <View style={s.compactStageInfo}>
-                <Text style={[s.compactStageLabel, { color: '#0E6DFD' }]}>
-                  Reached Destination
-                </Text>
-
-                <Text style={[s.compactStageTime, { color: '#0E6DFD' }]}>
-                  {reachedLocationDateTime.time || reachedLocationDateTime.date}
-                </Text>
-              </View>
-
-              <View style={s.compactIntervalBadge}>
-                <Text style={s.compactIntervalBadgeText}>
-                  {calculateTimeDifference(
-                    order?.pickedUpAt,
-                    order?.reachedLocationAt,
-                  )}
-                </Text>
-              </View>
-            </View>
-          )}
-
-          {/* Interval & Delivered */}
-          {deliveredAtDateTime.date !== 'N/A' && (
-            <View style={s.compactTimelineStage}>
-              <View style={[s.compactDot, { backgroundColor: '#16A34A' }]} />
-
-              <View style={s.compactStageInfo}>
-                <Text style={[s.compactStageLabel, { color: '#16A34A' }]}>
-                  Delivered
-                </Text>
-
-                <Text style={[s.compactStageTime, { color: '#16A34A' }]}>
-                  {deliveredAtDateTime.time || deliveredAtDateTime.date}
-                </Text>
-              </View>
-
-              <View style={s.compactIntervalBadge}>
-                <Text style={s.compactIntervalBadgeText}>
-                  {calculateTimeDifference(
-                    order?.reachedLocationAt,
-                    order?.deliveredAt,
-                  )}
-                </Text>
-              </View>
-            </View>
-          )}
+          <View style={s.infoCardBadge}>
+            <Text style={s.infoCardBadgeText}>Pickup</Text>
+          </View>
         </View>
 
-        {/* Total Delivery Time Summary */}
-        {orderDateTime.date !== 'N/A' && deliveredAtDateTime.date !== 'N/A' && (
-          <View style={s.compactTotalTimeRow}>
-            <Text style={s.compactTotalTimeLabel}>Total Delivery Time</Text>
-            <Text style={s.compactTotalTimeValue}>
-              {calculateTimeDifference(
-                order?.orderDetails?.creationTime ?? order?.createdAt,
-                order?.deliveredAt,
-              )}
+        <View style={s.divider} />
+
+        <InfoChip
+          icon={<MapPin size={14} color="#64748B" />}
+          label="Address"
+          value={shopAddressText || 'N/A'}
+        />
+
+        <View style={s.actionRow}>
+          {order.shopDetails?.phone && (
+            <TouchableOpacity
+              style={s.iconActionBtn}
+              onPress={() => Linking.openURL(`tel:${order.shopDetails!.phone}`)}
+              activeOpacity={0.8}
+            >
+              <Phone size={16} color="#16A34A" />
+              <Text style={[s.iconActionText, { color: '#16A34A' }]}>
+                Call Store
+              </Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[s.iconActionBtn, s.iconActionBtnBlue]}
+            onPress={() =>
+              openMaps(
+                shopCoord?.lat ?? null,
+                shopCoord?.lng ?? null,
+                shopAddressText,
+              )
+            }
+            activeOpacity={0.85}
+          >
+            <Navigation size={16} color="#0E6DFD" />
+            <Text style={[s.iconActionText, { color: '#0E6DFD' }]}>
+              Navigate
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </>
+  );
+
+  const renderStep1 = () => (
+    <>
+      <View style={s.infoCard}>
+        <View style={s.infoCardHeader}>
+          <View style={s.infoCardHeaderLeft}>
+            <Text style={s.infoCardTitle}>
+              {order.shopDetails?.name || 'Store'}
+            </Text>
+            <Text style={s.infoCardSub}>Pickup location</Text>
+          </View>
+          <View style={s.infoCardBadge}>
+            <Text style={s.infoCardBadgeText}>Pickup</Text>
+          </View>
+        </View>
+
+        <View style={s.divider} />
+
+        <InfoChip
+          icon={<MapPin size={14} color="#64748B" />}
+          label="Address"
+          value={shopAddressText || 'N/A'}
+        />
+
+        {/* ── PREPARATION TIME DISPLAY ── */}
+        <View style={s.preparationTimeBox}>
+          <Clock size={16} color="#7C3AED" />
+          <View style={{ flex: 1, marginLeft: 10 }}>
+            <Text style={s.preparationTimeLabel}>Preparation Time</Text>
+            <Text style={s.preparationTimeValue}>
+              {PREPARATION_TIME_MINUTES} minutes estimated
             </Text>
           </View>
+          <Text style={s.preparationTimeEmoji}>⏱️</Text>
+        </View>
+
+        <View style={s.actionRow}>
+          {order.shopDetails?.phone && (
+            <TouchableOpacity
+              style={s.iconActionBtn}
+              onPress={() => Linking.openURL(`tel:${order.shopDetails!.phone}`)}
+              activeOpacity={0.8}
+            >
+              <Phone size={16} color="#16A34A" />
+              <Text style={[s.iconActionText, { color: '#16A34A' }]}>
+                Call Store
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
+      <View style={s.infoCard}>
+        <Text style={s.sectionLabel}>ITEMS TO COLLECT</Text>
+        {(order.orderDetails?.orderItem ?? []).length > 0 ? (
+          (order.orderDetails!.orderItem as any[]).map((item: any) => (
+            <View key={item.id} style={s.itemRow}>
+              <View style={s.itemBullet} />
+              <Text style={s.itemName}>{item.name}</Text>
+              <Text style={s.itemQty}>×{item.itemCount}</Text>
+            </View>
+          ))
+        ) : (
+          <Text style={s.emptyText}>
+            {order.orderDetails?.orderDescription || 'No items listed'}
+          </Text>
+        )}
+        <View style={s.itemTotalRow}>
+          <Text style={s.itemTotalLabel}>Total Items</Text>
+          <Text style={s.itemTotalValue}>
+            {order.orderDetails?.totalItemCount ?? 0}
+          </Text>
+        </View>
+      </View>
+
+      {order.orderDetails?.orderLink && (
+        <TouchableOpacity
+          style={s.webviewBtn}
+          onPress={openOrderWebView}
+          activeOpacity={0.85}
+        >
+          <ExternalLink size={15} color="#7C3AED" />
+          <Text style={s.webviewBtnText}>View Full Order Details</Text>
+        </TouchableOpacity>
+      )}
+    </>
+  );
+
+  const renderStep2 = () => (
+    <>
+      <MapWithMarkers
+        showStore
+        showCustomer
+        storeLat={shopCoord?.lat}
+        storeLng={shopCoord?.lng}
+        storeName={order.shopDetails?.name ?? 'Store'}
+        customerLat={customerCoord?.lat}
+        customerLng={customerCoord?.lng}
+        customerName={order.orderDetails?.customerName ?? 'Customer'}
+        partnerLat={partnerCoord?.lat}
+        partnerLng={partnerCoord?.lng}
+        fallbackLabel={order.orderDetails?.customerName ?? 'Customer'}
+      />
+
+      {/* ── TIME ESTIMATES - STEP 2 ── */}
+      <View style={s.timeEstimatesRow}>
+        <TimeEstimateChip
+          icon={<Clock size={14} color="#64748B" />}
+          label="Drop ETA"
+          time={formatTimeLabel(dropEstimatedMinutes)}
+          subLabel="@ 20 km/h"
+        />
+      </View>
+
+      <View style={s.infoCard}>
+        <View style={s.infoCardHeader}>
+          <View style={s.infoCardHeaderLeft}>
+            <Text style={s.infoCardTitle}>
+              {order.orderDetails?.customerName || 'Customer'}
+            </Text>
+            <Text style={s.infoCardSub}>Delivery destination</Text>
+          </View>
+          <View style={[s.infoCardBadge, { backgroundColor: '#F0F9FF' }]}>
+            <Text style={[s.infoCardBadgeText, { color: '#0891B2' }]}>
+              Drop
+            </Text>
+          </View>
+        </View>
+
+        <View style={s.divider} />
+
+        <InfoChip
+          icon={<MapPin size={14} color="#64748B" />}
+          label="Address"
+          value={customerAddress.text}
+        />
+
+        <View style={s.actionRow}>
+          {order.orderDetails?.customerMobile && (
+            <TouchableOpacity
+              style={s.iconActionBtn}
+              onPress={() =>
+                Linking.openURL(
+                  `tel:${String(order.orderDetails!.customerMobile).slice(
+                    -10,
+                  )}`,
+                )
+              }
+              activeOpacity={0.8}
+            >
+              <Phone size={16} color="#16A34A" />
+              <Text style={[s.iconActionText, { color: '#16A34A' }]}>
+                Call Customer
+              </Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[s.iconActionBtn, s.iconActionBtnBlue]}
+            onPress={() =>
+              openMaps(
+                customerCoord?.lat ?? null,
+                customerCoord?.lng ?? null,
+                customerAddress.text,
+              )
+            }
+            activeOpacity={0.85}
+          >
+            <Navigation size={16} color="#0E6DFD" />
+            <Text style={[s.iconActionText, { color: '#0E6DFD' }]}>
+              Navigate
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {orderStatus === 'ORDER_PICKED_UP' && (
+          <TouchableOpacity
+            style={s.reportLocationInlineButton}
+            onPress={openReportModal}
+            disabled={reportSubmitting}
+            activeOpacity={0.85}
+          >
+            <AlertTriangle size={15} color="#B45309" />
+            <Text style={s.reportLocationInlineText}>
+              Is the customer location incorrect? Report another location
+            </Text>
+          </TouchableOpacity>
         )}
       </View>
-    </View>
+
+      {/* ── REPORTED ADDRESSES SECTION ── */}
+      {reportedAddresses.length > 0 && (
+        <View style={s.infoCard}>
+          <Text style={s.sectionLabel}>CUSTOMER REPORTED LOCATIONS</Text>
+          <Text style={s.reportedAddressesHint}>
+            Customer has reported {reportedAddresses.length} previous
+            location(s)
+          </Text>
+          {reportedAddresses.map((addr, idx) => (
+            <View key={addr.id} style={s.reportedAddressCard}>
+              <View style={s.reportedAddressHeader}>
+                <View style={s.reportedAddressIndex}>
+                  <Text style={s.reportedAddressIndexText}>{idx + 1}</Text>
+                </View>
+                <View style={s.reportedAddressInfo}>
+                  <Text style={s.reportedAddressLine1} numberOfLines={1}>
+                    {addr.addressLine1}
+                  </Text>
+                  <Text style={s.reportedAddressCity} numberOfLines={1}>
+                    {addr.city}, {addr.state} {addr.pincode}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={s.reportedAddressUseBtn}
+                  onPress={() => {
+                    openMaps(
+                      addr.latitude,
+                      addr.longitude,
+                      addr.addressLine1 as any,
+                    );
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Navigation size={14} color="#0E6DFD" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+    </>
   );
 
   const renderContent = () => {
@@ -2166,19 +1994,46 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
       case 3:
         return renderStep3();
       case 4:
-        return renderStep4();
+        return (
+          <View style={s.successCard}>
+            <View style={s.successIconWrap}>
+              <CheckCircle2 size={56} color="#16A34A" />
+            </View>
+            <Text style={s.successTitle}>Delivered!</Text>
+            <Text style={s.successSub}>
+              #{order.orderId || order.id} · {order.orderDetails?.customerName}
+            </Text>
+
+            <View style={s.successRow}>
+              <Text style={s.successRowLabel}>Customer</Text>
+              <Text style={s.successRowValue}>
+                {order.orderDetails?.customerName || 'N/A'}
+              </Text>
+            </View>
+            <View style={s.successRow}>
+              <Text style={s.successRowLabel}>Address</Text>
+              <Text style={s.successRowValue} numberOfLines={2}>
+                {customerAddress.text}
+              </Text>
+            </View>
+            <View style={s.successRow}>
+              <Text style={s.successRowLabel}>Payment</Text>
+              <Text style={s.successRowValue}>
+                {finalPaymentMethod ?? 'N/A'}
+              </Text>
+            </View>
+            <View style={[s.successRow, s.successRowLast]}>
+              <Text style={s.successRowLabel}>Order Value</Text>
+              <Text style={[s.successRowValue, s.successRowValueBold]}>
+                {formatCurrency(order?.finance?.payableAmount || computedTotal)}
+              </Text>
+            </View>
+          </View>
+        );
       default:
         return null;
     }
   };
-
-  const STEP_BANNERS = [
-    'Head to the store and pick up the order',
-    'Collect all items from the store',
-    "Head to the customer's location",
-    'Hand over the order to the customer',
-    'Order delivered successfully',
-  ];
 
   const renderStepper = () => (
     <View style={s.stepper}>
@@ -2244,6 +2099,38 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
         <View style={{ width: 36 }} />
       </View>
 
+      <View style={s.orderSummaryCard}>
+        <View style={s.orderSummaryMetrics}>
+          <View style={s.metric}>
+            <Text style={s.metricValue}>
+              {formatCurrency(totalBillAmount ?? computedTotal)}
+            </Text>
+            <Text style={s.metricLabel}>Total Bill</Text>
+          </View>
+          <View style={s.metricDivider} />
+          <View style={s.metric}>
+            <Text style={s.metricValue}>{pickupDistanceLabel}</Text>
+            <Text style={s.metricLabel}>Pickup</Text>
+          </View>
+          <View style={s.metricDivider} />
+          <View style={s.metric}>
+            <Text style={s.metricValue}>{displayDistance(dropDistance)}</Text>
+            <Text style={s.metricLabel}>Drop</Text>
+          </View>
+          <View style={s.metricDivider} />
+          <View style={s.metric}>
+            <Text style={s.metricValue}>{totalDistanceLabel}</Text>
+            <Text style={s.metricLabel}>Total Dist</Text>
+          </View>
+        </View>
+
+        <View style={s.orderSummaryStatusRow}>
+          <Text style={s.statusBadge}>{finalPaymentMethod || 'N/A'}</Text>
+          <Text style={s.statusTime}>{assignmentAgeLabel}</Text>
+          <Text style={s.statusTime}>{orderSummaryTimeLabel}</Text>
+        </View>
+      </View>
+
       {renderStepper()}
 
       <ScrollView
@@ -2251,77 +2138,11 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
         contentContainerStyle={s.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <View style={s.orderScrollSummary}>
-          <View style={s.orderStatusRow}>
-            <Text style={s.orderSummaryStatus}>
-              {orderStatus === 'DELIVERED' ? 'Delivered' : 'Live Order'}
-              {' • '}
-              {orderSummaryTimeLabel}
-            </Text>
-            {isHotOrder && (
-              <View style={s.hotOrderBadge}>
-                <Text style={s.hotOrderBadgeText}>Hot Order</Text>
-              </View>
-            )}
-          </View>
-
-          <View style={s.orderMetricsRow}>
-            <View style={s.orderMetric}>
-              <Text style={s.orderMetricLabel}>Est. Earnings</Text>
-              <Text style={s.orderMetricValue}>
-                {estimatedEarnings != null
-                  ? formatCurrency(estimatedEarnings)
-                  : 'N/A'}
-              </Text>
-            </View>
-            <View style={s.orderMetricDivider} />
-            <View style={s.orderMetric}>
-              <Text style={s.orderMetricLabel}>Pickup Distance</Text>
-              <Text style={s.orderMetricValue}>{displayDistance(pickupDistance)}</Text>
-            </View>
-            <View style={s.orderMetricDivider} />
-            <View style={s.orderMetric}>
-              <Text style={s.orderMetricLabel}>Drop Distance</Text>
-              <Text style={s.orderMetricValue}>{displayDistance(dropDistance)}</Text>
-            </View>
-            <View style={s.orderMetricDivider} />
-            <View style={s.orderMetric}>
-              <Text style={s.orderMetricLabel}>Total Distance</Text>
-              <Text style={s.orderMetricValue}>{displayDistance(totalDistance)}</Text>
-            </View>
-          </View>
-
-          <View style={s.orderPaymentSummaryRow}>
-            <Text style={s.orderPaymentBadge}>{finalPaymentMethod}</Text>
-            <Text style={s.orderPaymentTime}>
-              Tip: {tipAmount != null ? formatCurrency(Number(tipAmount)) : '₹0.00'}
-            </Text>
-            <Text style={s.orderPaymentTime}>
-              Surge: {surgeFee != null ? formatCurrency(Number(surgeFee)) : '₹0.00'}
-            </Text>
-          </View>
-        </View>
-
-        <View style={s.banner}>
-          <Text style={s.bannerText}>{STEP_BANNERS[config.stageIndex]}</Text>
-        </View>
-
         {renderContent()}
         <View style={{ height: 100 }} />
       </ScrollView>
 
       <View style={s.footer}>
-        {orderStatus === 'ORDER_PICKED_UP' && (
-          <TouchableOpacity
-            style={[s.secondaryAction, { marginBottom: 12 }]}
-            onPress={openReportModal}
-            disabled={reportSubmitting}
-            activeOpacity={0.85}
-          >
-            <Text style={s.secondaryActionText}>Report Another Location</Text>
-          </TouchableOpacity>
-        )}
-
         <TouchableOpacity
           style={[
             s.cta,
@@ -2558,7 +2379,6 @@ const OrderDeliveryScreen: React.FC<Props> = ({ route, navigation }) => {
           {!qrImageUrl ? (
             <ActivityIndicator size="large" color="#FFFFFF" />
           ) : qrImageRenderFailed ? (
-            // Keep a readable card here since this is an error state, not the QR itself
             <TouchableOpacity activeOpacity={1} style={s.qrFallbackCard}>
               <AlertTriangle size={30} color="#F59E0B" />
               <Text style={s.qrFallbackTitle}>QR preview unavailable</Text>
@@ -2738,19 +2558,7 @@ const mk = StyleSheet.create({
 // ─── Screen Styles ──────────────────────────────────────────────────────────
 
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F2F5FA' },
-  prepaidNote: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 8,
-  },
-  prepaidNoteEmoji: { fontSize: 16 },
-  prepaidNoteText: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
-  },
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2774,98 +2582,48 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.bricolageBold,
     color: '#0F172A',
   },
-  orderSummaryHeader: {
+
+  orderSummaryCard: {
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
   },
-  orderScrollSummary: {
-    backgroundColor: '#FFFFFF',
-  },
-  orderStatusRow: {
+  orderSummaryMetrics: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 7,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    marginBottom: 12,
   },
-  orderSummaryTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  orderSummaryTitle: {
-    flex: 1,
-    fontSize: 16,
-    fontFamily: FONT_FAMILY.bricolageBold,
-    color: '#0F172A',
-  },
-  hotOrderBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 10,
-    backgroundColor: '#FEE2E2',
-  },
-  hotOrderBadgeText: {
-    fontSize: 9,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#DC2626',
-  },
-  orderSummaryStatus: {
-    marginTop: 3,
-    fontSize: 10,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#DC2626',
-  },
-  orderMetricsRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  orderMetric: {
+  metric: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 0,
   },
-  orderMetricLabel: {
-    fontSize: 9,
-    textAlign: 'center',
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#64748B',
-  },
-  orderMetricValue: {
-    marginTop: 4,
+  metricValue: {
     fontSize: 14,
-    textAlign: 'center',
     fontFamily: FONT_FAMILY.bricolageBold,
     color: '#0F172A',
   },
-  orderMetricDivider: {
-    width: 1,
-    backgroundColor: '#E2E8F0',
+  metricLabel: {
+    fontSize: 9,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#94A3B8',
+    marginTop: 2,
   },
-  orderPaymentSummaryRow: {
+  metricDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: '#E2E8F0',
+    marginHorizontal: 4,
+  },
+  orderSummaryStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 8,
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 16,
-    paddingVertical: 7,
   },
-  orderPaymentBadge: {
-    paddingHorizontal: 7,
+  statusBadge: {
+    paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 4,
     backgroundColor: '#EFF6FF',
@@ -2873,11 +2631,12 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.outfitBold,
     color: '#0E6DFD',
   },
-  orderPaymentTime: {
+  statusTime: {
     fontSize: 9,
     fontFamily: FONT_FAMILY.outfitRegular,
     color: '#64748B',
   },
+
   stepper: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2914,23 +2673,16 @@ const s = StyleSheet.create({
     marginBottom: 18,
   },
   stepperLineDone: { backgroundColor: '#16A34A' },
-  banner: {
-    backgroundColor: '#EEF4FF',
-    paddingVertical: 9,
-    paddingHorizontal: 16,
-  },
-  bannerText: {
-    fontSize: 12,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0E6DFD',
-    textAlign: 'center',
-  },
+
   scroll: { flex: 1 },
-  scrollContent: { gap: 10, paddingBottom: 16 },
+  scrollContent: { gap: 10, paddingHorizontal: 14, paddingVertical: 12 },
+
   mapPlaceholder: {
     height: MAP_HEIGHT,
     backgroundColor: '#E8EFFF',
+    borderRadius: 14,
     overflow: 'hidden',
+    marginBottom: 6,
   },
   mapFallback: {
     alignItems: 'center',
@@ -2955,16 +2707,90 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.bricolageBold,
     color: '#0F172A',
   },
+
+  // ─── TIME ESTIMATE STYLES ───
+  timeEstimatesRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  timeEstimateChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#0A1730',
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  timeEstimateIcon: {
+    marginRight: 8,
+  },
+  timeEstimateContent: {
+    flex: 1,
+  },
+  timeEstimateLabel: {
+    fontSize: 9,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  timeEstimateValue: {
+    fontSize: 13,
+    fontFamily: FONT_FAMILY.bricolageBold,
+    color: '#0E6DFD',
+    marginTop: 2,
+  },
+  timeEstimateSub: {
+    fontSize: 8,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#94A3B8',
+    marginTop: 1,
+  },
+
+  // ─── PREPARATION TIME BOX ───
+  preparationTimeBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F3FF',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginVertical: 12,
+    borderWidth: 1,
+    borderColor: '#E9D5FF',
+  },
+  preparationTimeLabel: {
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#6D28D9',
+  },
+  preparationTimeValue: {
+    fontSize: 12,
+    fontFamily: FONT_FAMILY.bricolageBold,
+    color: '#7C3AED',
+    marginTop: 2,
+  },
+  preparationTimeEmoji: {
+    fontSize: 18,
+  },
+
   infoCard: {
     backgroundColor: '#FFFFFF',
-    marginHorizontal: 14,
-    borderRadius: 16,
+    borderRadius: 14,
     padding: 14,
     shadowColor: '#0A1730',
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 1,
   },
   infoCardHeader: {
     flexDirection: 'row',
@@ -2974,7 +2800,7 @@ const s = StyleSheet.create({
   },
   infoCardHeaderLeft: { flex: 1 },
   infoCardTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: FONT_FAMILY.bricolageBold,
     color: '#0F172A',
   },
@@ -2997,6 +2823,7 @@ const s = StyleSheet.create({
     color: '#16A34A',
   },
   divider: { height: 1, backgroundColor: '#F1F5F9', marginBottom: 10 },
+
   infoChip: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -3016,6 +2843,7 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.outfitBold,
     color: '#0F172A',
   },
+
   actionRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
   iconActionBtn: {
     flex: 1,
@@ -3031,6 +2859,7 @@ const s = StyleSheet.create({
   },
   iconActionBtnBlue: { borderColor: '#BFDBFE', backgroundColor: '#EFF6FF' },
   iconActionText: { fontSize: 12, fontFamily: FONT_FAMILY.outfitBold },
+
   sectionLabel: {
     fontSize: 10,
     fontFamily: FONT_FAMILY.outfitExtraBold,
@@ -3038,25 +2867,6 @@ const s = StyleSheet.create({
     letterSpacing: 0.9,
     marginBottom: 10,
     textTransform: 'uppercase',
-  },
-  rowBetween: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F8FAFC',
-  },
-  rowLabel: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#64748B',
-  },
-  rowValue: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
-    maxWidth: '55%',
-    textAlign: 'right',
   },
 
   itemRow: {
@@ -3105,124 +2915,179 @@ const s = StyleSheet.create({
     color: '#94A3B8',
     paddingVertical: 8,
   },
-  // ── Vendor / Customer toggle (Reach Store & Pickup stages) ──
-  contactToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginHorizontal: 14,
-  },
-  contactToggleBtn: {
-    flex: 1,
+
+  reportLocationInlineButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
+    gap: 7,
+    marginTop: 12,
+    paddingHorizontal: 10,
     paddingVertical: 9,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    backgroundColor: '#FFFFFF',
+    borderRadius: 9,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
   },
-  contactToggleBtnActive: {
-    borderColor: '#CBD5E1',
-    backgroundColor: '#F8FAFC',
-  },
-  contactToggleText: {
-    fontSize: 12,
+  reportLocationInlineText: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: FONT_FAMILY.outfitBold,
-    color: '#94A3B8',
+    color: '#92400E',
   },
-  contactToggleTextVendorActive: { color: '#FF4D00' },
-  contactToggleTextCustomerActive: { color: '#0B9E6E' },
 
-  vendorChip: {
+  customerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  customerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  customerMeta: {
+    flex: 1,
+  },
+  customerName: {
+    fontSize: 14,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#0F172A',
+  },
+  customerAddr: {
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#64748B',
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  customerCallBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#ECFDF5',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+
+  amountCompactRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginHorizontal: 14,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    shadowColor: '#0A1730',
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 1,
   },
-  vendorChipLeft: { flex: 1 },
-  vendorChipName: {
+  amountCompactLeft: {
+    flex: 1,
+  },
+  amountCompactLabel: {
     fontSize: 13,
     fontFamily: FONT_FAMILY.outfitBold,
     color: '#0F172A',
   },
-  vendorChipAddr: {
+  amountCompactSub: {
     fontSize: 11,
     fontFamily: FONT_FAMILY.outfitRegular,
     color: '#94A3B8',
     marginTop: 2,
   },
-  vendorChipMobileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 3,
+  amountCompactRight: {
+    alignItems: 'flex-end',
   },
-  vendorChipMobile: {
-    fontSize: 11,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#64748B',
+  amountCompactCaption: {
+    fontSize: 10,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
-  vendorChipCall: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#ECFDF5',
-    alignItems: 'center',
-    justifyContent: 'center',
+  amountCompactValue: {
+    fontSize: 20,
+    fontFamily: FONT_FAMILY.bricolageBold,
+    color: '#0E6DFD',
   },
 
-  amountHighlight: {
-    marginTop: 12,
-    backgroundColor: '#FFFBEB',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1.5,
-    borderColor: '#FDE68A',
+  prepaidNote: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 6,
+    marginTop: 8,
   },
-  amountHighlightLabel: {
+  prepaidNoteEmoji: { fontSize: 16 },
+  prepaidNoteText: {
     fontSize: 13,
     fontFamily: FONT_FAMILY.outfitBold,
-    color: '#92400E',
+    color: '#0F172A',
   },
-  amountHighlightValue: {
-    fontSize: 22,
-    fontFamily: FONT_FAMILY.bricolageBold,
-    color: '#92400E',
+
+  paymentMethodsList: {
+    marginBottom: 14,
   },
-  paymentModeRow: { flexDirection: 'row', gap: 10 },
-  paymentModeBtn: {
-    flex: 1,
+  paymentMethodItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+    paddingHorizontal: 12,
     paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 2,
+    marginBottom: 8,
+    borderRadius: 10,
+    borderWidth: 1.5,
     borderColor: '#E2E8F0',
     backgroundColor: '#F8FAFC',
   },
-  paymentModeBtnActive: { borderColor: '#0E6DFD', backgroundColor: '#EFF6FF' },
-  paymentModeBtnText: {
+  paymentMethodItemActive: {
+    borderColor: '#0E6DFD',
+    backgroundColor: '#EFF6FF',
+  },
+  paymentMethodItemDisabled: {
+    opacity: 0.6,
+  },
+  paymentMethodRadio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    flexShrink: 0,
+  },
+  paymentMethodRadioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#0E6DFD',
+  },
+  paymentMethodContent: {
+    flex: 1,
+  },
+  paymentMethodTitle: {
     fontSize: 13,
     fontFamily: FONT_FAMILY.outfitBold,
-    color: '#94A3B8',
+    color: '#0F172A',
   },
-  paymentModeBtnTextActive: { color: '#0E6DFD' },
+  paymentMethodDesc: {
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#64748B',
+    marginTop: 2,
+  },
+
+  comingSoonBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: '#FEF3C7',
+  },
+  comingSoonText: {
+    fontSize: 9,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#92400E',
+  },
+
   evidenceSection: { marginTop: 14 },
   errorBox: {
     backgroundColor: '#FEF2F2',
@@ -3306,188 +3171,8 @@ const s = StyleSheet.create({
     color: '#92400E',
     lineHeight: 18,
   },
-  customerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  customerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#EFF6FF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  customerMeta: {
-    flex: 1,
-  },
-  customerName: {
-    fontSize: 14,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
-  },
-  customerAddr: {
-    fontSize: 11,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#64748B',
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  customerCallBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#ECFDF5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  amountCompactRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  amountCompactLeft: {
-    flex: 1,
-  },
-  amountCompactLabel: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
-  },
-  amountCompactSub: {
-    fontSize: 11,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#94A3B8',
-    marginTop: 2,
-  },
-  amountCompactRight: {
-    alignItems: 'flex-end',
-  },
-  amountCompactCaption: {
-    fontSize: 10,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#94A3B8',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  amountCompactValue: {
-    fontSize: 20,
-    fontFamily: FONT_FAMILY.bricolageBold,
-    color: '#92400E',
-  },
-  qrModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  qrImageOnlyWrap: {
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
-    overflow: 'hidden',
-  },
-  qrImageOnly: {
-    width: '100%',
-    height: '100%',
-  },
-  qrImageLoadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.25)',
-  },
-  qrCloseFab: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 6,
-  },
-  qrFallbackCard: {
-    width: MODAL_IMAGE_WIDTH,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    paddingVertical: 24,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  qrFallbackCloseBtn: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    padding: 4,
-  },
-  qrFallbackTitle: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
-    marginTop: 4,
-  },
-  qrFallbackSub: {
-    fontSize: 11,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#64748B',
-    textAlign: 'center',
-    lineHeight: 16,
-    marginBottom: 4,
-  },
-  qrFallbackBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0E6DFD',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginTop: 4,
-  },
-  qrFallbackBtnText: {
-    fontSize: 12,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#FFFFFF',
-  },
-  qrRetryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  qrRetryBtnText: {
-    fontSize: 11,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0E6DFD',
-  },
+
   footer: { position: 'absolute', left: 14, right: 14, bottom: 24 },
-  secondaryAction: {
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  secondaryActionText: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
-  },
   cta: {
     height: 54,
     borderRadius: 14,
@@ -3505,6 +3190,7 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.bricolageBold,
     color: '#FFFFFF',
   },
+
   reportModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.5)',
@@ -3538,7 +3224,6 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // ── Mini map inside the report modal ──
   reportMapWrap: {
     height: REPORT_MAP_HEIGHT,
     borderRadius: 14,
@@ -3654,12 +3339,12 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.outfitBold,
     color: '#FFFFFF',
   },
+
   webviewBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    marginHorizontal: 14,
     borderRadius: 12,
     borderWidth: 1.5,
     borderColor: '#7C3AED',
@@ -3671,8 +3356,8 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.outfitExtraBold,
     color: '#7C3AED',
   },
+
   successCard: {
-    marginHorizontal: 14,
     marginTop: 12,
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
@@ -3731,82 +3416,7 @@ const s = StyleSheet.create({
     fontFamily: FONT_FAMILY.bricolageBold,
     color: '#0F172A',
   },
-  sectionTitleInline: {
-    fontSize: 14,
-    fontFamily: FONT_FAMILY.outfitExtraBold,
-    color: '#1E293B',
-  },
-  compactTimelineContainer: {
-    marginTop: 12,
-    paddingVertical: 10,
-  },
-  compactTimelineStage: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 0,
-  },
-  compactDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 12,
-    flexShrink: 0,
-  },
-  compactStageInfo: {
-    flex: 1,
-  },
-  compactStageLabel: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#1E293B',
-  },
-  compactStageTime: {
-    fontSize: 12,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    marginTop: 2,
-  },
-  compactIntervalBadge: {
-    minWidth: 42,
-    height: 28,
-    paddingHorizontal: 8,
-    borderRadius: 14,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: 12,
-  },
-  compactIntervalBadgeText: {
-    fontSize: 10,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#64748B',
-  },
-  compactTotalTimeRow: {
-    marginTop: 14,
-    paddingTop: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    borderRadius: 12,
-    backgroundColor: '#F0F9FF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  compactTotalTimeLabel: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#475569',
-  },
-  compactTotalTimeValue: {
-    fontSize: 14,
-    fontFamily: FONT_FAMILY.bricolageBold,
-    color: '#0E6DFD',
-  },
-  // ── REPORTED ADDRESSES STYLES ──
+
   reportedAddressesHint: {
     fontSize: 11,
     fontFamily: FONT_FAMILY.outfitRegular,
@@ -3863,5 +3473,100 @@ const s = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#BFDBFE',
+  },
+
+  qrModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  qrImageOnlyWrap: {
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+  },
+  qrImageOnly: {
+    width: '100%',
+    height: '100%',
+  },
+  qrImageLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.25)',
+  },
+  qrCloseFab: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  qrFallbackCard: {
+    width: MODAL_IMAGE_WIDTH,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  qrFallbackCloseBtn: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    padding: 4,
+  },
+  qrFallbackTitle: {
+    fontSize: 13,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#0F172A',
+    marginTop: 4,
+  },
+  qrFallbackSub: {
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: 16,
+    marginBottom: 4,
+  },
+  qrFallbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0E6DFD',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  qrFallbackBtnText: {
+    fontSize: 12,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#FFFFFF',
+  },
+  qrRetryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  qrRetryBtnText: {
+    fontSize: 11,
+    fontFamily: FONT_FAMILY.outfitBold,
+    color: '#0E6DFD',
   },
 });

@@ -53,9 +53,9 @@ import {
   Store,
   Trophy,
   UserRound,
+  Zap,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, { Circle as SvgCircle } from 'react-native-svg';
 import DateTimePicker, {
   DateTimePickerEvent,
 } from '@react-native-community/datetimepicker';
@@ -72,6 +72,8 @@ type ParsedCustomerAddress = {
   longitude: number | null;
 };
 
+type PartnerStatusType = 'alive' | 'sleeping' | 'dead';
+
 const UNASSIGN_WINDOW_MS = 150_000;
 
 type LiveOrderCardProps = {
@@ -79,6 +81,29 @@ type LiveOrderCardProps = {
   index: number;
   totalLiveOrders: number;
   currentLocation: Coordinate | null;
+};
+
+// ──── STATUS MAPPING ─────────────────────────────────────────────────────
+const getStatusType = (
+  isOnline: boolean,
+  isActive: boolean,
+): PartnerStatusType => {
+  if (!isActive) return 'dead';
+  return isOnline ? 'alive' : 'sleeping';
+};
+
+const STATUS_CONFIG: Record<
+  PartnerStatusType,
+  { label: string; color: string; bgColor: string; icon: string }
+> = {
+  alive: { label: 'Alive', color: '#16A34A', bgColor: '#ECFDF5', icon: '⚡' },
+  sleeping: {
+    label: 'Sleeping',
+    color: '#6366F1',
+    bgColor: '#EEF2FF',
+    icon: '🌙',
+  },
+  dead: { label: 'Dead', color: '#6B7280', bgColor: '#F3F4F6', icon: '⊘' },
 };
 
 // ──── LIVE ORDER CARD ─────────────────────────────────────────────────────
@@ -261,202 +286,7 @@ const LiveOrderCard: React.FC<LiveOrderCardProps> = ({
       variant="live"
     />
   );
-
-  return (
-    <TouchableOpacity
-      style={styles.liveCard}
-      activeOpacity={0.85}
-      onPress={() => navigation.navigate('OrderDelivery', { order })}
-    >
-      <View style={styles.orderMetaRow}>
-        <Text style={styles.liveOrderCount}>
-          {index + 1} of {totalLiveOrders}
-        </Text>
-        <Text style={styles.liveTimeText}>{assignmentLabel}</Text>
-      </View>
-      <View style={styles.livePulseRow}>
-        <View style={styles.liveDot} />
-        <Text style={styles.liveLabel}>Live Order</Text>
-      </View>
-
-      <View style={styles.liveSubRow}>
-        <Text style={styles.liveOrderId}>
-          #{order.orderId || order.id || 'N/A'}
-        </Text>
-        <View style={styles.liveStatePill}>
-          <Text style={styles.liveStatePillText}>
-            {formatStatusLabelLocal(
-              order.orderDetails?.state?.toUpperCase() ?? 'UNKNOWN',
-            )}
-          </Text>
-        </View>
-      </View>
-
-      <View
-        style={{
-          flexDirection: 'row',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginTop: 6,
-        }}
-      >
-        <Text style={styles.liveLocName}>
-          {order.orderDetails?.customerName || 'Customer'}
-        </Text>
-        <Text style={styles.liveTotalBillLabel}>
-          Total Bill Amount{' '}
-          <Text style={styles.liveEarningsInline}>
-            {totalBillAmount != null
-              ? formatCurrencyLocal(Number(totalBillAmount))
-              : liveComputedTotal > 0
-              ? formatCurrencyLocal(liveComputedTotal)
-              : 'N/A'}
-          </Text>
-        </Text>
-      </View>
-
-      <Text style={[styles.liveLocAddress, { marginTop: 2 }]}>
-        {order.shopDetails?.name || 'Shop'}
-      </Text>
-
-      <View style={styles.liveDistanceRow}>
-        <Text style={styles.liveDistanceText}>
-          Pickup: {pickupDistanceLabel}
-        </Text>
-        <Text style={styles.liveDistanceText}>
-          Delivery: {deliveryDistanceLabel}
-        </Text>
-      </View>
-
-      <View style={styles.liveFeesRow}>
-        <Text style={styles.liveFeeText}>Tip: {tipLabel}</Text>
-        <Text style={styles.liveFeeText}>Surge Fee: {surgeLabel}</Text>
-      </View>
-
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          marginTop: 10,
-          marginBottom: 4,
-        }}
-      >
-        {['At Store', 'Picked Up', 'Reach Destination', 'Delivered'].map(
-          (label, i) => {
-            const stageMap: Record<string, number> = {
-              ACCEPTED: 0,
-              PARTNER_ASSIGNED: 0,
-              ARRIVED_AT_STORE: 1,
-              ORDER_PICKED_UP: 2,
-              REACHED_LOCATION: 3,
-              DELIVERED: 4,
-            };
-            const currentIdx = stageMap[orderStatus] ?? 0;
-            const done = i < currentIdx;
-            const active = i === currentIdx;
-            return (
-              <React.Fragment key={label}>
-                <View style={{ alignItems: 'center' }}>
-                  <View
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 4,
-                      backgroundColor: done
-                        ? '#16A34A'
-                        : active
-                        ? '#0E6DFD'
-                        : '#E2E8F0',
-                    }}
-                  />
-                  <Text
-                    style={{
-                      fontSize: 8,
-                      color: active ? '#0E6DFD' : '#94A3B8',
-                      marginTop: 2,
-                      fontFamily: FONT_FAMILY.bricolageMedium,
-                    }}
-                  >
-                    {label}
-                  </Text>
-                </View>
-                {i < 3 && (
-                  <View
-                    style={{
-                      flex: 1,
-                      height: 2,
-                      backgroundColor: done ? '#16A34A' : '#E2E8F0',
-                      marginBottom: 10,
-                    }}
-                  />
-                )}
-              </React.Fragment>
-            );
-          },
-        )}
-      </View>
-
-      <TouchableOpacity
-        style={[
-          styles.stageActionButton,
-          { marginTop: 12, backgroundColor: '#0E6DFD' },
-        ]}
-        activeOpacity={0.85}
-        onPress={() => navigation.navigate('OrderDelivery', { order })}
-      >
-        <Text style={styles.stageActionButtonText}>Manage Delivery</Text>
-      </TouchableOpacity>
-    </TouchableOpacity>
-  );
 };
-
-const liveTimerStyles = StyleSheet.create({
-  timerRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginTop: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  timerRowActive: {
-    backgroundColor: '#FFFBEB',
-    borderColor: '#FDE68A',
-  },
-  timerRowExpired: {
-    backgroundColor: '#FEF2F2',
-    borderColor: '#FCA5A5',
-  },
-  timerIcon: {
-    fontSize: 14,
-    marginTop: 1,
-  },
-  timerActiveLabel: {
-    fontSize: 12,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#92400E',
-    lineHeight: 17,
-  },
-  timerCountdown: {
-    fontSize: 13,
-    fontFamily: FONT_FAMILY.bricolageBold,
-    color: '#B45309',
-  },
-  timerSubLabel: {
-    marginTop: 2,
-    fontSize: 10,
-    fontFamily: FONT_FAMILY.outfitRegular,
-    color: '#A16207',
-    lineHeight: 14,
-  },
-  timerExpiredLabel: {
-    fontSize: 12,
-    fontFamily: FONT_FAMILY.outfitBold,
-    color: '#DC2626',
-  },
-});
 
 /**
  * Payment-type classification
@@ -747,6 +577,42 @@ const NewOrderRequestCard: React.FC<NewOrderRequestCardProps> = ({
   );
 };
 
+// ──── OFFLINE STATE SCREEN ───────────────────────────────────────────────
+const OfflineStateScreen: React.FC<{
+  onGoAlive: () => void;
+  isToggling: boolean;
+}> = ({ onGoAlive, isToggling }) => {
+  return (
+    <View style={styles.offlineContainer}>
+      <View style={styles.offlineContent}>
+        <View style={styles.bikeImageWrapper}>
+          <Bike size={120} color="#0E6DFD" strokeWidth={1.5} />
+        </View>
+        <Text style={styles.offlineHeading}>Taking a break?</Text>
+        <Text style={styles.offlineSubtext}>
+          You are currently offline. Go alive to start receiving delivery
+          requests.
+        </Text>
+        <TouchableOpacity
+          style={[styles.goAliveButton, isToggling && { opacity: 0.6 }]}
+          onPress={onGoAlive}
+          disabled={isToggling}
+          activeOpacity={0.85}
+        >
+          {isToggling ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <>
+              <Zap size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.goAliveButtonText}>Go Alive</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
 // ──── MAIN HOME SCREEN ────────────────────────────────────────────────────
 const HomeScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
@@ -838,6 +704,10 @@ const HomeScreen: React.FC = () => {
   }, [partnerProfile]);
 
   const partnerId = partnerProfile?.id || authData.partnerId || '';
+  const currentStatus = getStatusType(
+    isOnline,
+    partnerProfile?.isActive !== false,
+  );
 
   const parseDateValue = (value: string | null): Date | null => {
     if (!value) return null;
@@ -1734,6 +1604,8 @@ const HomeScreen: React.FC = () => {
   const nextLevel = LEVELS[LEVELS.indexOf(currentLevel) + 1] ?? null;
   const levelMaxXp = nextLevel?.minXp ?? currentLevel.minXp;
 
+  const statusConfig = STATUS_CONFIG[currentStatus];
+
   return (
     <View style={styles.container}>
       <View style={styles.backgroundGlowOne} />
@@ -1788,34 +1660,36 @@ const HomeScreen: React.FC = () => {
 
             <View style={styles.headerNameSection}>
               <Text style={styles.headerName}>{partnerName}</Text>
-              <View style={styles.headerStatusRow}>
-                <View
-                  style={[
-                    styles.statusIndicator,
-                    isOnline
-                      ? styles.statusIndicatorOnline
-                      : styles.statusIndicatorOffline,
-                  ]}
-                />
+              <View
+                style={[
+                  styles.headerStatusRow,
+                  {
+                    backgroundColor: statusConfig.bgColor,
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    borderRadius: 12,
+                    alignSelf: 'flex-start',
+                    marginTop: 6,
+                  },
+                ]}
+              >
+                <Text style={{ fontSize: 14, marginRight: 6 }}>
+                  {statusConfig.icon}
+                </Text>
                 <Text
-                  style={[
-                    styles.headerStatus,
-                    isOnline
-                      ? styles.headerStatusOnline
-                      : styles.headerStatusOffline,
-                  ]}
+                  style={{
+                    fontSize: 12,
+                    fontFamily: FONT_FAMILY.outfitBold,
+                    color: statusConfig.color,
+                  }}
                 >
-                  {partnerProfile?.isActive === false
-                    ? 'Deactivated'
-                    : isOnline
-                    ? 'Online'
-                    : 'Offline'}
+                  {statusConfig.label}
                 </Text>
               </View>
             </View>
           </View>
 
-          {/* Toggle Section */}
+          {/* Toggle Section - Changed to Go Alive/Take Break */}
           <TouchableOpacity
             style={[
               styles.onlineToggleBtn,
@@ -1825,12 +1699,16 @@ const HomeScreen: React.FC = () => {
             activeOpacity={0.8}
             disabled={isToggling}
           >
-            <Text style={styles.onlineToggleBtnText}>
-              {isOnline ? '🟢' : '⚫'}
-            </Text>
-            <Text style={styles.onlineToggleBtnLabel}>
-              {isOnline ? 'Go Offline' : 'Go Online'}
-            </Text>
+            {isToggling ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <Zap size={14} color="#FFFFFF" />
+                <Text style={styles.onlineToggleBtnLabel}>
+                  {isOnline ? 'Take Break' : 'Go Alive'}
+                </Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
 
@@ -1867,9 +1745,11 @@ const HomeScreen: React.FC = () => {
             style={[
               styles.tabButton,
               activeTab === 'orders' && styles.tabButtonActive,
+              !isOnline && { opacity: 0.5 },
             ]}
-            onPress={() => setActiveTab('orders')}
-            activeOpacity={0.7}
+            onPress={() => isOnline && setActiveTab('orders')}
+            activeOpacity={isOnline ? 0.7 : 1}
+            disabled={!isOnline}
           >
             <Text
               style={[
@@ -1883,7 +1763,13 @@ const HomeScreen: React.FC = () => {
         </View>
 
         {/* ────── CONTENT ─────────────────────────────────────────────────────── */}
-        {activeTab === 'dashboard' ? (
+        {/* Show Offline State when offline and on orders tab */}
+        {!isOnline && activeTab === 'orders' ? (
+          <OfflineStateScreen
+            onGoAlive={handleToggleOnline}
+            isToggling={isToggling}
+          />
+        ) : activeTab === 'dashboard' ? (
           <View>
             {isStatsLoading ? (
               <View style={styles.loadingContainer}>
@@ -2141,6 +2027,61 @@ const styles = StyleSheet.create({
   content: { flex: 1, paddingHorizontal: 16 },
   contentContainer: { paddingBottom: 32 },
 
+  // ────── OFFLINE STATE ─────────────────────────────────────────────────
+  offlineContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    minHeight: 400,
+  },
+  offlineContent: {
+    alignItems: 'center',
+  },
+  bikeImageWrapper: {
+    width: 180,
+    height: 180,
+    borderRadius: 90,
+    backgroundColor: '#EFF6FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 32,
+  },
+  offlineHeading: {
+    fontSize: 24,
+    fontFamily: FONT_FAMILY.bricolageBold,
+    color: '#0F172A',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  offlineSubtext: {
+    fontSize: 14,
+    fontFamily: FONT_FAMILY.outfitRegular,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 28,
+    lineHeight: 20,
+  },
+  goAliveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#16A34A',
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 12,
+    shadowColor: '#16A34A',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 3,
+  },
+  goAliveButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: FONT_FAMILY.bricolageBold,
+  },
+
   // ────── COMMON HEADER ──────────────────────────────────────────────────
   commonHeader: {
     flexDirection: 'row',
@@ -2219,14 +2160,14 @@ const styles = StyleSheet.create({
   onlineToggleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: '#94A3B8',
     gap: 6,
   },
   onlineToggleBtnActive: {
-    backgroundColor: '#ECFDF5',
+    backgroundColor: '#16A34A',
   },
   onlineToggleBtnText: {
     fontSize: 14,
@@ -2234,7 +2175,7 @@ const styles = StyleSheet.create({
   onlineToggleBtnLabel: {
     fontSize: 12,
     fontFamily: FONT_FAMILY.outfitBold,
-    color: '#0F172A',
+    color: '#FFFFFF',
   },
 
   // ────── DEACTIVATION WARNING ───────────────────────────────────────────
