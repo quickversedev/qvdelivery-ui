@@ -11,6 +11,10 @@ export type DeliveryPartnerProfile = {
   earnings: number | null;
   isOnline?: boolean;
   isActive?: boolean;
+  mobileNumber?: string | null;
+  isVerified?: boolean;
+  rating?: number;
+  acceptanceRate?: number;
 };
 
 type OrderFinance = {
@@ -243,6 +247,10 @@ type DeliveryPartnerApiResponse = {
     isOnline?: boolean;
     isActive?: boolean;
     active?: boolean;
+    mobileNumber?: string | number;
+    isVerified?: boolean;
+    rating?: number;
+    acceptanceRate?: number;
   };
   id?: string;
   deliveryPartnerId?: string;
@@ -262,6 +270,10 @@ type DeliveryPartnerApiResponse = {
   orderFailed?: number;
   earnings?: number;
   totalEarnings?: number;
+  mobileNumber?: string | number;
+  isVerified?: boolean;
+  rating?: number;
+  acceptanceRate?: number;
 };
 
 const normalizePartnerProfile = (
@@ -295,6 +307,10 @@ const normalizePartnerProfile = (
         : null,
     isOnline: Boolean(payload?.isOnline ?? false),
     isActive: typeof payload?.isActive === 'boolean' ? payload.isActive : typeof payload?.active === 'boolean' ? payload.active : undefined,
+    mobileNumber: payload?.mobileNumber ? String(payload.mobileNumber) : null,
+    isVerified: Boolean(payload?.isVerified ?? false),
+    rating: Number(payload?.rating ?? 0),
+    acceptanceRate: Number(payload?.acceptanceRate ?? 0),
   };
 };
 
